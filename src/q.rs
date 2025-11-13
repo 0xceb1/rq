@@ -43,8 +43,9 @@ pub enum TokenType {
     // Literals.
     Identifier,
     Guid(Uuid),
+    Byte(u8),
     Char(char),
-    Symbol,
+    Symbol(usize),
     Short(i16),
     Int(i32),
     Long(i64),
@@ -54,7 +55,7 @@ pub enum TokenType {
     Month(i32),
     Minute(i32),
     Second(i32),
-    Time(i32),      // hh:mm:ss.uuu
+    // Time(i32),      // hh:mm:ss.uuu
     Timespan(i64),  // hh:mm:ss.nnnnnnnnn
     Timestamp(i64), // YYYY.MM.DDDhh:mm:ss.nnnnnnnn
 
