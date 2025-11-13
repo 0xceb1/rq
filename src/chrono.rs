@@ -341,6 +341,149 @@ impl std::fmt::Display for Timestamp {
         write!(f, "{}", self.to_literal())
     }
 }
-pub struct Month {}
 
-pub struct Day {}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Month {
+    months: i32, // Epoch: 2000.01 = 0
+}
+
+impl Month {
+    const MAX_MONTHS: i32 = 95999; // 9999.12
+    const MIN_MONTHS: i32 = -23988; // 0001.01
+    pub const MAX: Month = Month {
+        months: Month::MAX_MONTHS,
+    }; // 9999.12
+    pub const MIN: Month = Month {
+        months: Month::MIN_MONTHS,
+    }; // 0001.01
+
+    /// Creates a Month from a literal string in format "YYYY.MMm"
+    pub fn from_literal(literal: &str) -> Result<Self, String> {
+        // Expected format: "YYYY.MMm" (exactly 8 characters)
+        if literal.len() != 8 || !literal.ends_with('m') || literal.as_bytes()[4] != b'.' {
+            return Err(format!("'{literal}"));
+        }
+
+        let year: u32 = literal[0..4].parse().map_err(|_| format!("'{literal}"))?;
+        let month: i32 = literal[5..7].parse().map_err(|_| format!("'{literal}"))?;
+
+        if !(1..=12).contains(&month) {
+            return Err(format!("'{literal}"));
+        }
+
+        let months = (year as i32 - 2000) * 12 + (month - 1);
+
+        assert!((Month::MIN_MONTHS..=Month::MAX_MONTHS).contains(&months));
+        Ok(Month { months })
+    }
+
+    /// Converts the Month to a literal string in format "YYYY.MMm"
+    pub fn to_literal(self) -> String {
+        let total_months = self.months + (2000 * 12); // months since year 0
+        let year = total_months / 12;
+        let month = (total_months % 12) + 1;
+        format!("{:04}.{:02}m", year, month)
+    }
+
+    pub fn year(&self) -> i32 {
+        let total_months = self.months + (2000 * 12);
+        total_months / 12
+    }
+
+    pub fn mm(&self) -> i32 {
+        let total_months = self.months + (2000 * 12);
+        (total_months % 12) + 1
+    }
+
+    pub fn from_i32(months: i32) -> Self {
+        assert!((Month::MIN_MONTHS..=Month::MAX_MONTHS).contains(&months));
+        Month { months }
+    }
+
+    pub fn to_i32(self) -> i32 {
+        self.months
+    }
+}
+
+impl From<i32> for Month {
+    fn from(months: i32) -> Self {
+        assert!((Month::MIN_MONTHS..=Month::MAX_MONTHS).contains(&months));
+        Month { months }
+    }
+}
+
+impl From<Month> for i32 {
+    fn from(month: Month) -> Self {
+        month.months
+    }
+}
+
+impl PartialEq<i32> for Month {
+    fn eq(&self, other: &i32) -> bool {
+        self.months == *other
+    }
+}
+
+impl PartialEq<Month> for i32 {
+    fn eq(&self, other: &Month) -> bool {
+        *self == other.months
+    }
+}
+
+impl PartialOrd<i32> for Month {
+    fn partial_cmp(&self, other: &i32) -> Option<Ordering> {
+        self.months.partial_cmp(other)
+    }
+}
+
+impl PartialOrd<Month> for i32 {
+    fn partial_cmp(&self, other: &Month) -> Option<Ordering> {
+        self.partial_cmp(&other.months)
+    }
+}
+
+impl std::fmt::Display for Month {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_literal())
+    }
+}
+
+impl Add<i32> for Month {
+    type Output = Month;
+
+    fn add(self, rhs: i32) -> Month {
+        Month {
+            months: self.to_i32() + rhs,
+        }
+    }
+}
+
+impl Add<Month> for i32 {
+    type Output = Month;
+
+    fn add(self, rhs: Month) -> Month {
+        Month {
+            months: self + rhs.to_i32(),
+        }
+    }
+}
+
+impl Sub<i32> for Month {
+    type Output = Month;
+
+    fn sub(self, rhs: i32) -> Month {
+        Month {
+            months: self.to_i32() - rhs,
+        }
+    }
+}
+
+impl Sub<Month> for i32 {
+    type Output = Month;
+
+    fn sub(self, rhs: Month) -> Month {
+        Month {
+            months: self - rhs.to_i32(),
+        }
+    }
+}
