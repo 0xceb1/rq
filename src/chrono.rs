@@ -1,6 +1,7 @@
 // Wrappers for kdb/q temporal data structures
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
 use std::cmp::Ordering;
+use std::ops::{Add, Sub};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Date {
@@ -115,6 +116,46 @@ impl PartialOrd<Date> for i32 {
 impl std::fmt::Display for Date {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.to_literal())
+    }
+}
+
+impl Add<i32> for Date {
+    type Output = Date;
+
+    fn add(self, rhs: i32) -> Date {
+        Date {
+            days: self.to_i32() + rhs,
+        }
+    }
+}
+
+impl Add<Date> for i32 {
+    type Output = Date;
+
+    fn add(self, rhs: Date) -> Date {
+        Date {
+            days: self + rhs.to_i32(),
+        }
+    }
+}
+
+impl Sub<i32> for Date {
+    type Output = Date;
+
+    fn sub(self, rhs: i32) -> Date {
+        Date {
+            days: self.to_i32() - rhs,
+        }
+    }
+}
+
+impl Sub<Date> for i32 {
+    type Output = Date;
+
+    fn sub(self, rhs: Date) -> Date {
+        Date {
+            days: self - rhs.to_i32(),
+        }
     }
 }
 
@@ -252,6 +293,46 @@ impl PartialOrd<i64> for Timestamp {
 impl PartialOrd<Timestamp> for i64 {
     fn partial_cmp(&self, other: &Timestamp) -> Option<Ordering> {
         self.partial_cmp(&other.nanoseconds)
+    }
+}
+
+impl Add<i64> for Timestamp {
+    type Output = Timestamp;
+
+    fn add(self, rhs: i64) -> Timestamp {
+        Timestamp {
+            nanoseconds: self.to_i64() + rhs,
+        }
+    }
+}
+
+impl Add<Timestamp> for i64 {
+    type Output = Timestamp;
+
+    fn add(self, rhs: Timestamp) -> Timestamp {
+        Timestamp {
+            nanoseconds: self + rhs.to_i64(),
+        }
+    }
+}
+
+impl Sub<i64> for Timestamp {
+    type Output = Timestamp;
+
+    fn sub(self, rhs: i64) -> Timestamp {
+        Timestamp {
+            nanoseconds: self.to_i64() - rhs,
+        }
+    }
+}
+
+impl Sub<Timestamp> for i64 {
+    type Output = Timestamp;
+
+    fn sub(self, rhs: Timestamp) -> Timestamp {
+        Timestamp {
+            nanoseconds: self - rhs.to_i64(),
+        }
     }
 }
 
