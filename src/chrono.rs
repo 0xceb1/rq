@@ -1,7 +1,9 @@
 // Wrappers for kdb/q temporal data structures
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, Timelike};
+use regex::Regex;
 use std::cmp::Ordering;
 use std::ops::{Add, Sub};
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Date {
@@ -484,6 +486,204 @@ impl Sub<Month> for i32 {
     fn sub(self, rhs: Month) -> Month {
         Month {
             months: self - rhs.to_i32(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Timespan {
+    nanoseconds: i64,
+}
+
+static TIMESPAN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(-?\d+)D(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?$").unwrap());
+
+impl Timespan {
+    const MIN_NANO: i64 = -i64::MAX + 1;
+    const MAX_NANO: i64 = i64::MAX - 1;
+    pub const MIN: Timespan = Timespan {
+        nanoseconds: Timespan::MIN_NANO,
+    };
+    pub const MAX: Timespan = Timespan {
+        nanoseconds: Timespan::MAX_NANO,
+    };
+
+    pub fn from_literal(literal: &str) -> Result<Self, String> {
+        let caps = TIMESPAN_RE
+            .captures(literal)
+            .ok_or_else(|| format!("'{literal}"))?;
+
+        let days: i64 = caps[1].parse().map_err(|_| format!("'{literal}"))?;
+        let hours: i64 = caps[2].parse().map_err(|_| format!("'{literal}"))?;
+        let minutes: i64 = caps[3].parse().map_err(|_| format!("'{literal}"))?;
+        let seconds: i64 = caps[4].parse().map_err(|_| format!("'{literal}"))?;
+
+        let nanos: i64 = caps
+            .get(5)
+            .map(|m| {
+                let nanos_str = format!("{:0<9}", m.as_str());
+                nanos_str[0..9].parse().unwrap_or(0)
+            })
+            .unwrap_or(0);
+
+        let nanoseconds = days * 86400 * 1_000_000_000
+            + hours * 3600 * 1_000_000_000
+            + minutes * 60 * 1_000_000_000
+            + seconds * 1_000_000_000
+            + nanos;
+
+        assert!((Timespan::MIN_NANO..=Timespan::MAX_NANO).contains(&nanoseconds));
+        Ok(Timespan { nanoseconds })
+    }
+
+    /// Converts the Timespan to a literal string in format "DDxDHH:MM:SS.nnnnnnnnn"
+    pub fn to_literal(self) -> String {
+        let is_negative = self.nanoseconds < 0;
+        let abs_nanos = self.nanoseconds.abs();
+
+        let days = abs_nanos / (86400 * 1_000_000_000);
+        let remainder = abs_nanos % (86400 * 1_000_000_000);
+
+        let hours = remainder / (3600 * 1_000_000_000);
+        let remainder = remainder % (3600 * 1_000_000_000);
+
+        let minutes = remainder / (60 * 1_000_000_000);
+        let remainder = remainder % (60 * 1_000_000_000);
+
+        let seconds = remainder / 1_000_000_000;
+        let nanos = remainder % 1_000_000_000;
+
+        let sign = if is_negative { "-" } else { "" };
+        format!(
+            "{}{}D{:02}:{:02}:{:02}.{:09}",
+            sign, days, hours, minutes, seconds, nanos
+        )
+    }
+
+    pub fn to_i64(self) -> i64 {
+        self.nanoseconds
+    }
+
+    pub fn from_i64(nanoseconds: i64) -> Self {
+        Timespan { nanoseconds }
+    }
+
+    pub fn hh(&self) -> i64 {
+        self.nanoseconds / (3600 * 1_000_000_000)
+    }
+
+    pub fn mm(&self) -> i64 {
+        self.nanoseconds / (60 * 1_000_000_000)
+    }
+
+    pub fn uu(&self) -> i64 {
+        self.nanoseconds / (60 * 1_000_000_000)
+    }
+
+    pub fn ss(&self) -> i64 {
+        self.nanoseconds / 1_000_000_000
+    }
+}
+
+impl From<i64> for Timespan {
+    fn from(nanoseconds: i64) -> Self {
+        assert!((Timespan::MIN_NANO..=Timespan::MAX_NANO).contains(&nanoseconds));
+        Timespan { nanoseconds }
+    }
+}
+
+impl From<Timespan> for i64 {
+    fn from(ts: Timespan) -> Self {
+        ts.nanoseconds
+    }
+}
+
+impl PartialEq<i64> for Timespan {
+    fn eq(&self, other: &i64) -> bool {
+        self.nanoseconds == *other
+    }
+}
+
+impl PartialEq<Timespan> for i64 {
+    fn eq(&self, other: &Timespan) -> bool {
+        *self == other.nanoseconds
+    }
+}
+
+impl PartialOrd<i64> for Timespan {
+    fn partial_cmp(&self, other: &i64) -> Option<Ordering> {
+        self.nanoseconds.partial_cmp(other)
+    }
+}
+
+impl PartialOrd<Timespan> for i64 {
+    fn partial_cmp(&self, other: &Timespan) -> Option<Ordering> {
+        self.partial_cmp(&other.nanoseconds)
+    }
+}
+
+impl std::fmt::Display for Timespan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_literal())
+    }
+}
+
+impl Add<i64> for Timespan {
+    type Output = Timespan;
+
+    fn add(self, rhs: i64) -> Timespan {
+        Timespan {
+            nanoseconds: self.to_i64() + rhs,
+        }
+    }
+}
+
+impl Add<Timespan> for i64 {
+    type Output = Timespan;
+
+    fn add(self, rhs: Timespan) -> Timespan {
+        Timespan {
+            nanoseconds: self + rhs.to_i64(),
+        }
+    }
+}
+
+impl Sub<i64> for Timespan {
+    type Output = Timespan;
+
+    fn sub(self, rhs: i64) -> Timespan {
+        Timespan {
+            nanoseconds: self.to_i64() - rhs,
+        }
+    }
+}
+
+impl Sub<Timespan> for i64 {
+    type Output = Timespan;
+
+    fn sub(self, rhs: Timespan) -> Timespan {
+        Timespan {
+            nanoseconds: self - rhs.to_i64(),
+        }
+    }
+}
+
+impl Sub<Timespan> for Timespan {
+    type Output = Timespan;
+
+    fn sub(self, rhs: Timespan) -> Timespan {
+        Timespan {
+            nanoseconds: self.nanoseconds - rhs.nanoseconds,
+        }
+    }
+}
+
+impl Add<Timespan> for Timespan {
+    type Output = Timespan;
+
+    fn add(self, rhs: Timespan) -> Timespan {
+        Timespan {
+            nanoseconds: self.nanoseconds + rhs.nanoseconds,
         }
     }
 }
