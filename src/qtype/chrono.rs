@@ -687,3 +687,469 @@ impl Add<Timespan> for Timespan {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Minute {
+    minutes: i32, // Minutes since midnight
+}
+
+impl Minute {
+    const MAX_MINUTES: i32 = i32::MAX - 1;
+    const MIN_MINUTES: i32 = -i32::MAX + 1;
+    pub const MAX: Minute = Minute {
+        minutes: Minute::MAX_MINUTES,
+    };
+    pub const MIN: Minute = Minute {
+        minutes: Minute::MIN_MINUTES,
+    };
+
+    pub fn from_literal(literal: &str) -> Result<Self, String> {
+        if literal.len() != 5 || literal.as_bytes()[2] != b':' {
+            return Err(format!("'{literal}"));
+        }
+
+        let hours: i32 = literal[0..2].parse().map_err(|_| format!("'{literal}"))?;
+        let mins: i32 = literal[3..5].parse().map_err(|_| format!("'{literal}"))?;
+
+        if !(0..24).contains(&hours) || !(0..60).contains(&mins) {
+            return Err(format!("'{literal}"));
+        }
+
+        let minutes = hours * 60 + mins;
+        assert!((Minute::MIN_MINUTES..=Minute::MAX_MINUTES).contains(&minutes));
+        Ok(Minute { minutes })
+    }
+
+    pub fn to_literal(self) -> String {
+        // let total_mins = self.minutes.rem_eucuid(1440);
+        let hours = self.minutes / 60;
+        let mins = self.minutes % 60;
+        format!("{:02}:{:02}", hours, mins)
+    }
+
+    pub fn from_i32(minutes: i32) -> Self {
+        assert!((Minute::MIN_MINUTES..=Minute::MAX_MINUTES).contains(&minutes));
+        Minute { minutes }
+    }
+
+    pub fn to_i32(self) -> i32 {
+        self.minutes
+    }
+}
+
+impl From<i32> for Minute {
+    fn from(minutes: i32) -> Self {
+        assert!((Minute::MIN_MINUTES..=Minute::MAX_MINUTES).contains(&minutes));
+        Minute { minutes }
+    }
+}
+
+impl From<Minute> for i32 {
+    fn from(minute: Minute) -> Self {
+        minute.minutes
+    }
+}
+
+impl PartialEq<i32> for Minute {
+    fn eq(&self, other: &i32) -> bool {
+        self.minutes == *other
+    }
+}
+
+impl PartialEq<Minute> for i32 {
+    fn eq(&self, other: &Minute) -> bool {
+        *self == other.minutes
+    }
+}
+
+impl PartialOrd<i32> for Minute {
+    fn partial_cmp(&self, other: &i32) -> Option<Ordering> {
+        self.minutes.partial_cmp(other)
+    }
+}
+
+impl PartialOrd<Minute> for i32 {
+    fn partial_cmp(&self, other: &Minute) -> Option<Ordering> {
+        self.partial_cmp(&other.minutes)
+    }
+}
+
+impl std::fmt::Display for Minute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_literal())
+    }
+}
+
+impl Add<i32> for Minute {
+    type Output = Minute;
+
+    fn add(self, rhs: i32) -> Minute {
+        Minute {
+            minutes: self.to_i32() + rhs,
+        }
+    }
+}
+
+impl Add<Minute> for i32 {
+    type Output = Minute;
+
+    fn add(self, rhs: Minute) -> Minute {
+        Minute {
+            minutes: self + rhs.to_i32(),
+        }
+    }
+}
+
+impl Sub<i32> for Minute {
+    type Output = Minute;
+
+    fn sub(self, rhs: i32) -> Minute {
+        Minute {
+            minutes: self.to_i32() - rhs,
+        }
+    }
+}
+
+impl Sub<Minute> for i32 {
+    type Output = Minute;
+
+    fn sub(self, rhs: Minute) -> Minute {
+        Minute {
+            minutes: self - rhs.to_i32(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Second {
+    seconds: i32, // Seconds since midnight
+}
+
+impl Second {
+    const MAX_SECONDS: i32 = i32::MAX - 1;
+    const MIN_SECONDS: i32 = -i32::MAX + 1;
+    pub const MAX: Second = Second {
+        seconds: Second::MAX_SECONDS,
+    };
+    pub const MIN: Second = Second {
+        seconds: Second::MIN_SECONDS,
+    };
+
+    pub fn from_literal(literal: &str) -> Result<Self, String> {
+        if literal.len() != 8 || literal.as_bytes()[2] != b':' || literal.as_bytes()[5] != b':' {
+            return Err(format!("'{literal}"));
+        }
+
+        let hours: i32 = literal[0..2].parse().map_err(|_| format!("'{literal}"))?;
+        let mins: i32 = literal[3..5].parse().map_err(|_| format!("'{literal}"))?;
+        let secs: i32 = literal[6..8].parse().map_err(|_| format!("'{literal}"))?;
+
+        if !(0..24).contains(&hours) || !(0..60).contains(&mins) || !(0..60).contains(&secs) {
+            return Err(format!("'{literal}"));
+        }
+
+        let seconds = hours * 3600 + mins * 60 + secs;
+        assert!((Second::MIN_SECONDS..=Second::MAX_SECONDS).contains(&seconds));
+        Ok(Second { seconds })
+    }
+
+    pub fn to_literal(self) -> String {
+        let total_secs = self.seconds.rem_euclid(86400);
+        let hours = total_secs / 3600;
+        let mins = (total_secs % 3600) / 60;
+        let secs = total_secs % 60;
+        format!("{:02}:{:02}:{:02}", hours, mins, secs)
+    }
+
+    pub fn from_i32(seconds: i32) -> Self {
+        assert!((Second::MIN_SECONDS..=Second::MAX_SECONDS).contains(&seconds));
+        Second { seconds }
+    }
+
+    pub fn to_i32(self) -> i32 {
+        self.seconds
+    }
+}
+
+impl From<i32> for Second {
+    fn from(seconds: i32) -> Self {
+        assert!((Second::MIN_SECONDS..=Second::MAX_SECONDS).contains(&seconds));
+        Second { seconds }
+    }
+}
+
+impl From<Second> for i32 {
+    fn from(second: Second) -> Self {
+        second.seconds
+    }
+}
+
+impl PartialEq<i32> for Second {
+    fn eq(&self, other: &i32) -> bool {
+        self.seconds == *other
+    }
+}
+
+impl PartialEq<Second> for i32 {
+    fn eq(&self, other: &Second) -> bool {
+        *self == other.seconds
+    }
+}
+
+impl PartialOrd<i32> for Second {
+    fn partial_cmp(&self, other: &i32) -> Option<Ordering> {
+        self.seconds.partial_cmp(other)
+    }
+}
+
+impl PartialOrd<Second> for i32 {
+    fn partial_cmp(&self, other: &Second) -> Option<Ordering> {
+        self.partial_cmp(&other.seconds)
+    }
+}
+
+impl std::fmt::Display for Second {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_literal())
+    }
+}
+
+impl Add<i32> for Second {
+    type Output = Second;
+
+    fn add(self, rhs: i32) -> Second {
+        Second {
+            seconds: self.to_i32() + rhs,
+        }
+    }
+}
+
+impl Add<Second> for i32 {
+    type Output = Second;
+
+    fn add(self, rhs: Second) -> Second {
+        Second {
+            seconds: self + rhs.to_i32(),
+        }
+    }
+}
+
+impl Sub<i32> for Second {
+    type Output = Second;
+
+    fn sub(self, rhs: i32) -> Second {
+        Second {
+            seconds: self.to_i32() - rhs,
+        }
+    }
+}
+
+impl Sub<Second> for i32 {
+    type Output = Second;
+
+    fn sub(self, rhs: Second) -> Second {
+        Second {
+            seconds: self - rhs.to_i32(),
+        }
+    }
+}
+
+// Cross-type operations between Minute and Second
+
+impl PartialEq<Second> for Minute {
+    fn eq(&self, other: &Second) -> bool {
+        self.minutes * 60 == other.seconds
+    }
+}
+
+impl PartialEq<Minute> for Second {
+    fn eq(&self, other: &Minute) -> bool {
+        self.seconds == other.minutes * 60
+    }
+}
+
+impl PartialOrd<Second> for Minute {
+    fn partial_cmp(&self, other: &Second) -> Option<Ordering> {
+        (self.minutes * 60).partial_cmp(&other.seconds)
+    }
+}
+
+impl PartialOrd<Minute> for Second {
+    fn partial_cmp(&self, other: &Minute) -> Option<Ordering> {
+        self.seconds.partial_cmp(&(other.minutes * 60))
+    }
+}
+
+impl Add<Second> for Minute {
+    type Output = Second;
+
+    fn add(self, rhs: Second) -> Second {
+        Second {
+            seconds: self.minutes * 60 + rhs.seconds,
+        }
+    }
+}
+
+impl Add<Minute> for Second {
+    type Output = Second;
+
+    fn add(self, rhs: Minute) -> Second {
+        Second {
+            seconds: self.seconds + rhs.minutes * 60,
+        }
+    }
+}
+
+impl Sub<Second> for Minute {
+    type Output = Second;
+
+    fn sub(self, rhs: Second) -> Second {
+        Second {
+            seconds: self.minutes * 60 - rhs.seconds,
+        }
+    }
+}
+
+impl Sub<Minute> for Second {
+    type Output = Second;
+
+    fn sub(self, rhs: Minute) -> Second {
+        Second {
+            seconds: self.seconds - rhs.minutes * 60,
+        }
+    }
+}
+
+// Cross-type operations between Timespan and Minute
+
+impl PartialEq<Minute> for Timespan {
+    fn eq(&self, other: &Minute) -> bool {
+        self.nanoseconds == other.minutes as i64 * 60_000_000_000
+    }
+}
+
+impl PartialEq<Timespan> for Minute {
+    fn eq(&self, other: &Timespan) -> bool {
+        self.minutes as i64 * 60_000_000_000 == other.nanoseconds
+    }
+}
+
+impl PartialOrd<Minute> for Timespan {
+    fn partial_cmp(&self, other: &Minute) -> Option<Ordering> {
+        self.nanoseconds
+            .partial_cmp(&(other.minutes as i64 * 60_000_000_000))
+    }
+}
+
+impl PartialOrd<Timespan> for Minute {
+    fn partial_cmp(&self, other: &Timespan) -> Option<Ordering> {
+        (self.minutes as i64 * 60_000_000_000).partial_cmp(&other.nanoseconds)
+    }
+}
+
+impl Add<Minute> for Timespan {
+    type Output = Timespan;
+
+    fn add(self, rhs: Minute) -> Timespan {
+        Timespan {
+            nanoseconds: self.nanoseconds + rhs.minutes as i64 * 60_000_000_000,
+        }
+    }
+}
+
+impl Add<Timespan> for Minute {
+    type Output = Timespan;
+
+    fn add(self, rhs: Timespan) -> Timespan {
+        Timespan {
+            nanoseconds: self.minutes as i64 * 60_000_000_000 + rhs.nanoseconds,
+        }
+    }
+}
+
+impl Sub<Minute> for Timespan {
+    type Output = Timespan;
+
+    fn sub(self, rhs: Minute) -> Timespan {
+        Timespan {
+            nanoseconds: self.nanoseconds - rhs.minutes as i64 * 60_000_000_000,
+        }
+    }
+}
+
+impl Sub<Timespan> for Minute {
+    type Output = Timespan;
+
+    fn sub(self, rhs: Timespan) -> Timespan {
+        Timespan {
+            nanoseconds: self.minutes as i64 * 60_000_000_000 - rhs.nanoseconds,
+        }
+    }
+}
+
+// Cross-type operations between Timespan and Second
+
+impl PartialEq<Second> for Timespan {
+    fn eq(&self, other: &Second) -> bool {
+        self.nanoseconds == other.seconds as i64 * 1_000_000_000
+    }
+}
+
+impl PartialEq<Timespan> for Second {
+    fn eq(&self, other: &Timespan) -> bool {
+        self.seconds as i64 * 1_000_000_000 == other.nanoseconds
+    }
+}
+
+impl PartialOrd<Second> for Timespan {
+    fn partial_cmp(&self, other: &Second) -> Option<Ordering> {
+        self.nanoseconds
+            .partial_cmp(&(other.seconds as i64 * 1_000_000_000))
+    }
+}
+
+impl PartialOrd<Timespan> for Second {
+    fn partial_cmp(&self, other: &Timespan) -> Option<Ordering> {
+        (self.seconds as i64 * 1_000_000_000).partial_cmp(&other.nanoseconds)
+    }
+}
+
+impl Add<Second> for Timespan {
+    type Output = Timespan;
+
+    fn add(self, rhs: Second) -> Timespan {
+        Timespan {
+            nanoseconds: self.nanoseconds + rhs.seconds as i64 * 1_000_000_000,
+        }
+    }
+}
+
+impl Add<Timespan> for Second {
+    type Output = Timespan;
+
+    fn add(self, rhs: Timespan) -> Timespan {
+        Timespan {
+            nanoseconds: self.seconds as i64 * 1_000_000_000 + rhs.nanoseconds,
+        }
+    }
+}
+
+impl Sub<Second> for Timespan {
+    type Output = Timespan;
+
+    fn sub(self, rhs: Second) -> Timespan {
+        Timespan {
+            nanoseconds: self.nanoseconds - rhs.seconds as i64 * 1_000_000_000,
+        }
+    }
+}
+
+impl Sub<Timespan> for Second {
+    type Output = Timespan;
+
+    fn sub(self, rhs: Timespan) -> Timespan {
+        Timespan {
+            nanoseconds: self.seconds as i64 * 1_000_000_000 - rhs.nanoseconds,
+        }
+    }
+}
