@@ -8,3 +8,5 @@ chrono = "0.4.42"
 uuid = { version = "1.18.1", features = ["v4"] }
 regex = "1.12.2"
 ndarray = { version = "0.17.1", features = ["rayon", "std"] }
+ascii = "1.1.0"
+lasso = { version = "0.7.3", features = ["multi-threaded"] }
