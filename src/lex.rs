@@ -49,6 +49,7 @@ pub enum Literal<'de> {
     Char(AsciiChar),
     Byte(u8),
     Symbol(Symbol),
+    #[display("{}", Literal::unescape(_0))]
     QString(&'de str),
     Short(i16),
     Int(i32),
@@ -65,6 +66,16 @@ pub enum Literal<'de> {
     Nil,
 }
 
+impl Literal<'_> {
+    pub fn unescape<'de>(s: &'de str) -> Cow<'de, str> {
+        // TODO: impl escaping
+        s.strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .map(Cow::Borrowed)
+            .unwrap_or(Cow::Borrowed(s))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Token<'de> {
     pub origin: &'de str,
@@ -75,7 +86,11 @@ pub struct Token<'de> {
 
 impl fmt::Display for Token<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} {} {}", self.kind, self.origin, self.literal)
+        write!(
+            f,
+            "kind={:?}, origin={}, literal={}",
+            self.kind, self.origin, self.literal
+        )
     }
 }
 
@@ -161,13 +176,6 @@ pub enum TokenKind {
     // While,
     // Lambda,
     Eof,
-}
-
-impl Token<'_> {
-    pub fn unescape<'de>(s: &'de str) -> Cow<'de, str> {
-        // TODO: impl escaping
-        Cow::Borrowed(s.trim_matches('"'))
-    }
 }
 
 pub struct Lexer<'de> {
