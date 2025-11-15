@@ -4,7 +4,7 @@ use derive_more::Display;
 use miette::{Diagnostic, Error, LabeledSpan, SourceSpan};
 use std::ascii::Char as AsciiChar;
 use std::borrow::Cow;
-use std::fmt;
+use std::{fmt, usize};
 use thiserror::Error;
 
 #[derive(Diagnostic, Debug, Error)]
@@ -43,54 +43,50 @@ impl StringTerminationError {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Display)]
-pub enum Literal<'de> {
-    Bool(bool),
-    Char(AsciiChar),
-    Byte(u8),
-    Symbol(Symbol),
-    #[display("{}", Literal::unescape(_0))]
-    QString(&'de str),
-    Short(i16),
-    Int(i32),
-    Long(i64),
-    Real(f32),
-    Float(f64),
-    Date(Date),
-    Month(Month),
-    Minute(Minute),
-    Second(Second),
-    Timespan(Timespan),
-    Timestamp(Timestamp),
-    #[display("nil")]
-    Nil,
-}
+// #[derive(Debug, Clone, Copy, PartialEq, Display)]
+// pub enum Literal<'de> {
+//     Bool(bool),
+//     Char(AsciiChar),
+//     Byte(u8),
+//     Symbol(Symbol),
+//     #[display("{}", Literal::unescape(_0))]
+//     QString(&'de str),
+//     Short(i16),
+//     Int(i32),
+//     Long(i64),
+//     Real(f32),
+//     Float(f64),
+//     Date(Date),
+//     Month(Month),
+//     Minute(Minute),
+//     Second(Second),
+//     Timespan(Timespan),
+//     Timestamp(Timestamp),
+//     #[display("nil")]
+//     Nil,
+// }
 
-impl Literal<'_> {
-    pub fn unescape<'de>(s: &'de str) -> Cow<'de, str> {
-        // TODO: impl escaping
-        s.strip_prefix('"')
-            .and_then(|s| s.strip_suffix('"'))
-            .map(Cow::Borrowed)
-            .unwrap_or(Cow::Borrowed(s))
-    }
-}
+// impl Literal<'_> {
+//     pub fn unescape<'de>(s: &'de str) -> Cow<'de, str> {
+//         // TODO: impl escaping
+//         s.strip_prefix('"')
+//             .and_then(|s| s.strip_suffix('"'))
+//             .map(Cow::Borrowed)
+//             .unwrap_or(Cow::Borrowed(s))
+//     }
+// }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Token<'de> {
     pub origin: &'de str,
     pub offset: usize,
     pub kind: TokenKind,
-    pub literal: Literal<'de>,
+    // pub literal: Literal<'de>,
 }
 
 impl fmt::Display for Token<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "kind={:?}, origin={}, literal={}",
-            self.kind, self.origin, self.literal
-        )
+        write!(f, "kind={:?}, origin={}", self.kind, self.origin)
     }
 }
 
@@ -138,6 +134,7 @@ pub enum TokenKind {
     // Literals.
     Identifier,
     // Guid(Uuid),
+    Boolean,
     Byte,
     Char,
     Symbol,
@@ -156,6 +153,19 @@ pub enum TokenKind {
 
     // Non-atomic types
     QString,
+    ByteVec,
+    SymbolVec,
+    ShortVec,
+    IntVec,
+    LongVec,
+    RealVec,
+    FloatVec,
+    DateVec,
+    MonthVec,
+    MinuteVec,
+    SecondVec,
+    TimespanVec,
+    TimestampVec,
 
     // // Keywords.
     // And,
@@ -227,6 +237,7 @@ impl<'de> Iterator for Lexer<'de> {
 
             enum Started {
                 Slash,
+                Symbol,
                 String,
                 Number,
                 Identifier,
@@ -239,7 +250,6 @@ impl<'de> Iterator for Lexer<'de> {
                     kind,
                     offset: c_at,
                     origin: c_str,
-                    literal: Literal::Nil,
                 }))
             };
 
@@ -256,7 +266,6 @@ impl<'de> Iterator for Lexer<'de> {
                 '+' => return just(TokenKind::Plus),
                 ';' => return just(TokenKind::Semicolon),
                 '*' => return just(TokenKind::Star),
-                '`' => return just(TokenKind::BackTick),
                 '#' => return just(TokenKind::Hash),
                 '@' => return just(TokenKind::At),
                 '~' => return just(TokenKind::Tilde),
@@ -266,6 +275,7 @@ impl<'de> Iterator for Lexer<'de> {
                 '?' => return just(TokenKind::Query),
                 '$' => return just(TokenKind::Dollar),
                 '!' => return just(TokenKind::Bang),
+                '`' => Started::Symbol,
                 '"' => Started::String,
                 c => {
                     return Some(Err(SingleTokenError {
@@ -277,6 +287,57 @@ impl<'de> Iterator for Lexer<'de> {
                 }
             };
             break match started {
+                Started::Symbol => {
+                    // WARN: when backtick is followed by some built-in operators, the behavior is bizarre!
+                    // This is not supported in our toy interpreter for now, and is unlikely to be supported in the future.
+                    // Examples:
+                    // q)x:`*
+                    // q)x
+                    // *[`]
+                    // q)type x
+                    // 104h
+                    // q)x:`*
+                    // q)x
+                    // *[`]
+                    // q)type x
+                    // 104h
+                    // q)x:`\
+                    // q)x
+                    // `\
+                    // q)type x
+                    // 108h
+                    // ```
+                    let end = self
+                        .rest
+                        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '`')
+                        .unwrap_or(self.whole.len() - 1);
+                    let tag = self.rest.find('`').unwrap_or(self.whole.len() - 1);
+                    if end == 0 && tag != 0 {
+                        let c = self.rest.chars().next().unwrap();
+                        let err = SingleTokenError {
+                            src: self.whole.to_string(),
+                            token: c,
+                            err_span: SourceSpan::from(self.byte..self.byte + c.len_utf8()),
+                        };
+                        self.byte += self.rest.len();
+                        self.rest = &self.rest[self.rest.len()..];
+                        return Some(Err(err.into()));
+                    }
+
+                    let literal = &c_onwards[..end + 1];
+                    self.byte += end;
+                    self.rest = &self.rest[end..];
+                    let kind = if end <= tag {
+                        TokenKind::Symbol
+                    } else {
+                        TokenKind::SymbolVec
+                    };
+                    Some(Ok(Token {
+                        origin: literal,
+                        offset: c_at,
+                        kind,
+                    }))
+                }
                 Started::String => {
                     let mut escaped = false;
                     let end = self.rest.bytes().position(|b| {
@@ -299,16 +360,12 @@ impl<'de> Iterator for Lexer<'de> {
                                 origin: literal,
                                 offset: c_at,
                                 kind: TokenKind::Char,
-                                literal: Literal::Char(
-                                    AsciiChar::from_u8(literal.as_bytes()[1]).unwrap(),
-                                ),
                             }))
                         } else {
                             Some(Ok(Token {
                                 origin: literal,
                                 offset: c_at,
                                 kind: TokenKind::QString,
-                                literal: Literal::QString(literal),
                             }))
                         }
                     } else {
