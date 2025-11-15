@@ -1,3 +1,4 @@
+#![feature(ascii_char)]
 pub mod lex;
 pub mod qtype;
 
