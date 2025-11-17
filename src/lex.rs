@@ -222,6 +222,7 @@ impl<'de> Iterator for Lexer<'de> {
 
     /// Once the iterator returns `Err`, it will only return `None`.
     fn next(&mut self) -> Option<Self::Item> {
+        let mut is_previous_whitespace = false;
         if let Some(next) = self.peeked.take() {
             return Some(next);
         }
@@ -245,7 +246,8 @@ impl<'de> Iterator for Lexer<'de> {
                 // IfColonElse(TokenKind, TokenKind),
             }
 
-            let just = move |kind: TokenKind| {
+            let mut just = move |kind: TokenKind| {
+                is_previous_whitespace = false;
                 Some(Ok(Token {
                     kind,
                     offset: c_at,
@@ -277,6 +279,12 @@ impl<'de> Iterator for Lexer<'de> {
                 '!' => return just(TokenKind::Bang),
                 '`' => Started::Symbol,
                 '"' => Started::String,
+                '/' => Started::Slash,
+                '0'..'9' => Started::Number,
+                c if c.is_whitespace() => {
+                    is_previous_whitespace = true;
+                    continue;
+                }
                 c => {
                     return Some(Err(SingleTokenError {
                         src: self.whole.to_string(),
@@ -309,10 +317,14 @@ impl<'de> Iterator for Lexer<'de> {
                     // ```
                     let end = self
                         .rest
-                        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '`')
-                        .unwrap_or(self.whole.len() - 1);
-                    let tag = self.rest.find('`').unwrap_or(self.whole.len() - 1);
-                    if end == 0 && tag != 0 {
+                        .find(|c: char| {
+                            !c.is_ascii_alphanumeric() && c != '_' && c != '`' && c != ':'
+                        })
+                        .unwrap_or(self.rest.len());
+                    let tag = self.rest.find('`').unwrap_or(self.rest.len());
+
+                    if (end == 0 && tag != 0) || self.rest.starts_with('_') {
+                        // a symbol literal can contains _ but can't start with
                         let c = self.rest.chars().next().unwrap();
                         let err = SingleTokenError {
                             src: self.whole.to_string(),
@@ -323,6 +335,8 @@ impl<'de> Iterator for Lexer<'de> {
                         self.rest = &self.rest[self.rest.len()..];
                         return Some(Err(err.into()));
                     }
+
+                    //TODO: if a symbol starts with :, it will be parsed as a path, therefore / is allowed
 
                     let literal = &c_onwards[..end + 1];
                     self.byte += end;
@@ -355,19 +369,16 @@ impl<'de> Iterator for Lexer<'de> {
                         let literal = &c_onwards[..end + 1 + 1];
                         self.byte += end + 1;
                         self.rest = &self.rest[end + 1..];
-                        if end == 1 {
-                            Some(Ok(Token {
-                                origin: literal,
-                                offset: c_at,
-                                kind: TokenKind::Char,
-                            }))
+                        let token_kind = if end == 1 {
+                            TokenKind::Char
                         } else {
-                            Some(Ok(Token {
-                                origin: literal,
-                                offset: c_at,
-                                kind: TokenKind::QString,
-                            }))
-                        }
+                            TokenKind::QString
+                        };
+                        Some(Ok(Token {
+                            origin: literal,
+                            offset: c_at,
+                            kind: token_kind,
+                        }))
                     } else {
                         let err = StringTerminationError {
                             src: self.whole.to_string(),
@@ -379,6 +390,31 @@ impl<'de> Iterator for Lexer<'de> {
                         self.rest = &self.rest[self.rest.len()..];
 
                         return Some(Err(err.into()));
+                    }
+                }
+
+                Started::Slash => {
+                    // TODO:
+                    // 1. a slash is also valid for a comment when it's at the beginning of one file
+                    // 2. support multi-line comments
+                    if is_previous_whitespace {
+                        let line_end = self.rest.find('\n').unwrap_or(self.rest.len());
+                        let comment_closed = self.rest.find('\\');
+
+                        let offset = if let Some(comment_closed) = comment_closed {
+                            comment_closed + 1
+                        } else {
+                            line_end
+                        };
+                        self.byte += offset;
+                        self.rest = &self.rest[offset..];
+                        continue;
+                    } else {
+                        Some(Ok(Token {
+                            origin: c_str,
+                            offset: c_at,
+                            kind: TokenKind::Slash,
+                        }))
                     }
                 }
                 _ => todo!(),
