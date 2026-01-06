@@ -1,16 +1,22 @@
-use miette::Result;
-use rq::chrono;
-use rq::{Lexer, Token, TokenKind};
+use miette::{IntoDiagnostic, Result};
+use rq::Lexer;
+use std::io::{self, Write};
 
 fn main() -> Result<()> {
-    // let code = "\"a\"\"中\"\"This is a string with escaped \\\"values\\\"\"";
-    // let code = "`0 `1";
-    let code =
-        "* /this is a comment\n`s1 /this is a multiline comment\nthis is a multiline comment\\`s2";
-    println!("{code}");
-    let lexer = Lexer::new(code);
-    for c in lexer {
-        println!("{}", c?);
+    loop {
+        print!("q) ");
+        io::stdout().flush().into_diagnostic()?;
+        let mut buf = String::new();
+        let bytes_read = io::stdin().read_line(&mut buf).into_diagnostic()?;
+        if bytes_read == 0 {
+            break;
+        }
+        if !buf.trim().is_empty() {
+            let lexer = Lexer::new(buf.as_str());
+            for c in lexer {
+                println!("{}", c?);
+            }
+        }
     }
     Ok(())
 }
