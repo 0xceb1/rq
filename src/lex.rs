@@ -242,7 +242,7 @@ impl<'de> Iterator for Lexer<'de> {
                 // IfColonElse(TokenKind, TokenKind),
             }
 
-            let mut just = move |kind: TokenKind| {
+            let mut just = |kind: TokenKind| {
                 is_previous_whitespace = false;
                 Some(Ok(Token {
                     kind,
