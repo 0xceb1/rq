@@ -232,7 +232,7 @@ impl<'de> Iterator for Lexer<'de> {
                 Slash,
                 Symbol,
                 String,
-                Number(i32),
+                Number(u32),
                 Identifier,
                 // IfEqualElse(TokenKind, TokenKind), // >=, <=
                 // IfColonElse(TokenKind, TokenKind),
@@ -272,7 +272,7 @@ impl<'de> Iterator for Lexer<'de> {
                 '`' => Started::Symbol,
                 '"' => Started::String,
                 '/' => Started::Slash,
-                '0'..='9' => Started::Number(c.to_digit(10).unwrap() as i32),
+                n @ '0'..='9' => Started::Number(n.to_digit(10).unwrap()),
                 c if c.is_whitespace() => {
                     is_previous_whitespace = true;
                     continue;
@@ -401,6 +401,40 @@ impl<'de> Iterator for Lexer<'de> {
                             offset: c_at,
                             kind: TokenKind::Slash,
                         }))
+                    }
+                }
+
+                Started::Number(n) => {
+                    if n == 0 && self.rest.starts_with('x') {
+                        let after_0x = &c_onwards[2..]; // skip "0x"
+                        let hex_len = after_0x
+                            .find(|c: char| !c.is_ascii_hexdigit())
+                            .unwrap_or(after_0x.len());
+                        let first_non_digit = 2 + hex_len;
+                        let literal = &c_onwards[..first_non_digit];
+
+                        let extra_bytes = literal.len() - c.len_utf8();
+                        self.byte += extra_bytes;
+                        self.rest = &self.rest[extra_bytes..];
+                        let token = if literal.len() <= 4 {
+                            Some(Ok(Token {
+                                origin: literal,
+                                offset: c_at,
+                                kind: TokenKind::Byte,
+                            }))
+                        } else {
+                            Some(Ok(Token {
+                                origin: literal,
+                                offset: c_at,
+                                kind: TokenKind::ByteVec,
+                            }))
+                        };
+                        return token;
+                    } else {
+                        let first_non_digit = c_onwards
+                            .find(|c| !matches!(c, '.' | '0'..='9'))
+                            .unwrap_or(c_onwards.len());
+                        todo!("parsing others")
                     }
                 }
                 _ => todo!(),
