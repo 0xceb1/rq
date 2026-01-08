@@ -14,7 +14,13 @@ fn main() -> Result<()> {
         if !buf.trim().is_empty() {
             let lexer = Lexer::new(buf.as_str());
             for c in lexer {
-                println!("{}", c?);
+                match c {
+                    Ok(token) => println!("{}", token),
+                    Err(e) => {
+                        eprintln!("{:?}", e);
+                        break;
+                    }
+                }
             }
         }
     }
