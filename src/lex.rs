@@ -2,6 +2,8 @@ use miette::{Diagnostic, Error, SourceSpan};
 use std::fmt;
 use thiserror::Error;
 
+const NUMERICAL_SUFFIXES: &[char] = &['b', 'h', 'i', 'j', 'e', 'f', 'p', 'n', 'm', 'd', 'u', 'v'];
+
 #[derive(Diagnostic, Debug, Error)]
 #[error("Unexpected token '{token}'")]
 pub struct SingleTokenError {
@@ -90,6 +92,7 @@ impl fmt::Display for Token<'_> {
 
 #[derive(PartialEq, Debug, Copy, Clone)]
 pub enum Numerical {
+    Boolean,
     Short,
     Int,
     Long,
@@ -148,12 +151,11 @@ pub enum TokenKind {
     // Literals.
     Identifier,
     // Guid(Uuid),
-    Boolean,
     Byte,
     Char,
     Symbol,
-    Typed(Numerical),
-    Untyped(Numerical),
+    Typed,
+    Untyped,
 
     // Non-atomic types
     QString,
@@ -416,25 +418,62 @@ impl<'de> Iterator for Lexer<'de> {
                         let extra_bytes = literal.len() - c.len_utf8();
                         self.byte += extra_bytes;
                         self.rest = &self.rest[extra_bytes..];
-                        let token = if literal.len() <= 4 {
-                            Some(Ok(Token {
-                                origin: literal,
-                                offset: c_at,
-                                kind: TokenKind::Byte,
-                            }))
+                        let token_kind = if literal.len() <= 4 {
+                            TokenKind::Byte
                         } else {
-                            Some(Ok(Token {
-                                origin: literal,
-                                offset: c_at,
-                                kind: TokenKind::ByteVec,
-                            }))
+                            TokenKind::ByteVec
                         };
-                        return token;
+                        return Some(Ok(Token {
+                            origin: literal,
+                            offset: c_at,
+                            kind: token_kind,
+                        }));
+                    // TODO: a leading D is a valid timespan literal!
                     } else {
-                        let first_non_digit = c_onwards
-                            .find(|c| !matches!(c, '.' | '0'..='9'))
+                        // Numerical literal patterns:
+                        // short     : 42h
+                        // int       : 42i
+                        // long      : 42 42j
+                        // real      : 4.2e
+                        // float     : 4.2 4.2f
+                        // timestamp : 2013.02.06D12:34:56.123456789 2013.02.06D12:34:56.123456789p
+                        //             12:34:56.123456789p -> 2000.01.01D12:34:56.123456789
+                        //             2013.02p            -> 2000.01.01D20:13:00.020000000(coerced to long)
+                        //             2013.02.06p         -> 2013.02.06D00:00:00.000000000
+                        //             12:34p              -> 2000.01.01D12:34:00.000000000
+                        //             12:34:56p           -> 2000.01.01D12:34:56.000000000
+                        // timespan  : 12:34:56.123456789 12:34:56.123456789n
+                        //             2013.02.06D12:34:56.123456789n -> 4785D12:34:56.123456789
+                        //             2013.02n                       -> 0D20:13:00.02000000 (coerced to long)
+                        //             2013.02.06n                    -> 4785D00:00:00.000000000
+                        //             12:34n                         -> 0D12:34:00.000000000
+                        //             12:34:56n                      -> 0D12:34:56.00000000
+                        // month     : 2013.02m
+                        //             2013.02.06m -> 2013.06m (coerced to long)
+                        // date      : 2013.02.06 2013.02.06d
+                        // minute    : 12:34 12:34u
+                        // second    : 12:34:56 12:34:56v 12:34v 12v
+                        let mut first_non_digit = c_onwards
+                            .find(|c| {
+                                !matches!(c, '.' | ':' | 'D' | 'N' | 'W' | 'n' | 'w' | '0'..='9')
+                            })
                             .unwrap_or(c_onwards.len());
-                        todo!("parsing others")
+                        let suffix = c_onwards[first_non_digit..].chars().next().unwrap_or('\0');
+                        let mut token_kind = TokenKind::Untyped;
+                        if NUMERICAL_SUFFIXES.contains(&suffix) {
+                            first_non_digit += 1;
+                            token_kind = TokenKind::Typed;
+                        }
+                        let literal = &c_onwards[..first_non_digit];
+                        let extra_bytes = literal.len() - c.len_utf8();
+                        self.byte += extra_bytes;
+                        self.rest = &self.rest[extra_bytes..];
+
+                        Some(Ok(Token {
+                            origin: literal,
+                            offset: c_at,
+                            kind: token_kind,
+                        }))
                     }
                 }
                 _ => todo!(),
