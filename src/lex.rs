@@ -259,6 +259,7 @@ impl<'de> Iterator for Lexer<'de> {
                 ',' => return just(TokenKind::Comma),
                 '.' => return just(TokenKind::Dot),
                 '-' => return just(TokenKind::Minus),
+                '_' => return just(TokenKind::Underscore),
                 '+' => return just(TokenKind::Plus),
                 ';' => return just(TokenKind::Semicolon),
                 '*' => return just(TokenKind::Star),
@@ -274,6 +275,7 @@ impl<'de> Iterator for Lexer<'de> {
                 '`' => Started::Symbol,
                 '"' => Started::String,
                 '/' => Started::Slash,
+                'a'..='z' | 'A'..='Z' => Started::Identifier,
                 n @ '0'..='9' => Started::Number(n.to_digit(10).unwrap()),
                 c if c.is_whitespace() => {
                     is_previous_whitespace = true;
@@ -405,7 +407,22 @@ impl<'de> Iterator for Lexer<'de> {
                         }))
                     }
                 }
+                Started::Identifier => {
+                    let first_non_ident = c_onwards
+                        .find(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
+                        .unwrap_or(c_onwards.len());
 
+                    let literal = &c_onwards[..first_non_ident];
+                    let extra_bytes = literal.len() - c.len_utf8();
+                    self.byte += extra_bytes;
+                    self.rest = &self.rest[extra_bytes..];
+
+                    Some(Ok(Token {
+                        origin: literal,
+                        offset: c_at,
+                        kind: TokenKind::Identifier,
+                    }))
+                }
                 Started::Number(n) => {
                     if n == 0 && self.rest.starts_with('x') {
                         let after_0x = &c_onwards[2..]; // skip "0x"
