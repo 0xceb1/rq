@@ -143,10 +143,12 @@ pub enum TokenKind {
     GreaterEqual,
     Less,
     LessEqual,
-    Colon,      // :
-    ColonColon, // ::
-    Quote,      // '
-    QuoteColon, // ':
+    Colon,          // :
+    ColonColon,     // ::
+    Quote,          // '
+    QuoteColon,     // ':
+    SlashColon,     // /: each right
+    BackslashColon, // \: each left
 
     // Literals.
     Identifier,
@@ -272,6 +274,7 @@ impl<'de> Iterator for Lexer<'de> {
                 '?' => return just(TokenKind::Query),
                 '$' => return just(TokenKind::Dollar),
                 '!' => return just(TokenKind::Bang),
+                '=' => return just(TokenKind::Equal),
                 '`' => Started::Symbol,
                 '"' => Started::String,
                 '/' => Started::Slash,
@@ -387,6 +390,7 @@ impl<'de> Iterator for Lexer<'de> {
                     // TODO:
                     // 1. a slash is also valid for a comment when it's at the beginning of one file
                     // 2. support multi-line comments
+                    // 3. parse each right
                     if is_previous_whitespace {
                         let line_end = self.rest.find('\n').unwrap_or(self.rest.len());
                         let comment_closed = self.rest.find('\\');
