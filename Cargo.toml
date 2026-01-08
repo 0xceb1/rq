@@ -13,3 +13,4 @@ lasso = { version = "0.7.3", features = ["multi-threaded"] }
 derive_more = {version = "2.0.1", features = ["display"]}
 miette = { version = "7.6.0", features = ["fancy"] }
 thiserror = "2.0.17"
+anyhow = "1.0.100"

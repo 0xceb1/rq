@@ -1,10 +1,5 @@
-use crate::qtype::chrono::*;
-use crate::qtype::symbol::Symbol;
-use derive_more::Display;
-use miette::{Diagnostic, Error, LabeledSpan, SourceSpan};
-use std::ascii::Char as AsciiChar;
-use std::borrow::Cow;
-use std::{fmt, usize};
+use miette::{Diagnostic, Error, SourceSpan};
+use std::fmt;
 use thiserror::Error;
 
 #[derive(Diagnostic, Debug, Error)]
@@ -17,6 +12,9 @@ pub struct SingleTokenError {
 
     #[label = "this input character"]
     err_span: SourceSpan,
+
+    #[help]
+    help: Option<String>,
 }
 
 impl SingleTokenError {
@@ -91,6 +89,22 @@ impl fmt::Display for Token<'_> {
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
+pub enum Numerical {
+    Short,
+    Int,
+    Long,
+    Real,
+    Float,
+    Date, // 2000.01.01 = 0
+    Month,
+    Minute,
+    Second,
+    // Time,      // hh:mm:ss.uuu
+    Timespan,  // hh:mm:ss.nnnnnnnnn
+    Timestamp, // YYYY.MM.DDDhh:mm:ss.nnnnnnnn
+}
+
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub enum TokenKind {
     // Single-character tokens.
     LeftParen,
@@ -138,34 +152,12 @@ pub enum TokenKind {
     Byte,
     Char,
     Symbol,
-    Short,
-    Int,
-    Long,
-    Real,
-    Float,
-    Date, // 2000.01.01 = 0
-    Month,
-    Minute,
-    Second,
-    // Time,      // hh:mm:ss.uuu
-    Timespan,  // hh:mm:ss.nnnnnnnnn
-    Timestamp, // YYYY.MM.DDDhh:mm:ss.nnnnnnnn
+    Typed(Numerical),
+    Untyped(Numerical),
 
     // Non-atomic types
     QString,
     ByteVec,
-    SymbolVec,
-    ShortVec,
-    IntVec,
-    LongVec,
-    RealVec,
-    FloatVec,
-    DateVec,
-    MonthVec,
-    MinuteVec,
-    SecondVec,
-    TimespanVec,
-    TimestampVec,
 
     // // Keywords.
     // And,
@@ -240,7 +232,7 @@ impl<'de> Iterator for Lexer<'de> {
                 Slash,
                 Symbol,
                 String,
-                Number,
+                Number(i32),
                 Identifier,
                 // IfEqualElse(TokenKind, TokenKind), // >=, <=
                 // IfColonElse(TokenKind, TokenKind),
@@ -280,7 +272,7 @@ impl<'de> Iterator for Lexer<'de> {
                 '`' => Started::Symbol,
                 '"' => Started::String,
                 '/' => Started::Slash,
-                '0'..'9' => Started::Number,
+                '0'..='9' => Started::Number(c.to_digit(10).unwrap() as i32),
                 c if c.is_whitespace() => {
                     is_previous_whitespace = true;
                     continue;
@@ -290,6 +282,7 @@ impl<'de> Iterator for Lexer<'de> {
                         src: self.whole.to_string(),
                         token: c,
                         err_span: SourceSpan::from(self.byte - c.len_utf8()..self.byte),
+                        help: None,
                     }
                     .into()));
                 }
@@ -317,19 +310,17 @@ impl<'de> Iterator for Lexer<'de> {
                     // ```
                     let end = self
                         .rest
-                        .find(|c: char| {
-                            !c.is_ascii_alphanumeric() && c != '_' && c != '`' && c != ':'
-                        })
+                        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != ':')
                         .unwrap_or(self.rest.len());
-                    let tag = self.rest.find('`').unwrap_or(self.rest.len());
 
-                    if (end == 0 && tag != 0) || self.rest.starts_with('_') {
+                    if self.rest.starts_with('_') {
                         // a symbol literal can contains _ but can't start with
                         let c = self.rest.chars().next().unwrap();
                         let err = SingleTokenError {
                             src: self.whole.to_string(),
                             token: c,
                             err_span: SourceSpan::from(self.byte..self.byte + c.len_utf8()),
+                            help: Some("a symbol starting with _ is ambiguous in q".to_string()),
                         };
                         self.byte += self.rest.len();
                         self.rest = &self.rest[self.rest.len()..];
@@ -341,15 +332,10 @@ impl<'de> Iterator for Lexer<'de> {
                     let literal = &c_onwards[..end + 1];
                     self.byte += end;
                     self.rest = &self.rest[end..];
-                    let kind = if end <= tag {
-                        TokenKind::Symbol
-                    } else {
-                        TokenKind::SymbolVec
-                    };
                     Some(Ok(Token {
                         origin: literal,
                         offset: c_at,
-                        kind,
+                        kind: TokenKind::Symbol,
                     }))
                 }
                 Started::String => {
