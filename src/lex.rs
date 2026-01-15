@@ -270,7 +270,6 @@ impl<'de> Iterator for Lexer<'de> {
 
     /// Once the iterator returns `Err`, it will only return `None`.
     fn next(&mut self) -> Option<Self::Item> {
-        let mut is_previous_whitespace = false;
         if let Some(next) = self.peeked.take() {
             return Some(next);
         }
@@ -284,6 +283,9 @@ impl<'de> Iterator for Lexer<'de> {
             self.rest = chars.as_str();
             self.byte += c.len_utf8();
 
+            let prev_whitespace = c_at == 0
+                || self.whole.as_bytes()[c_at - 1].is_ascii_whitespace();
+
             enum Started {
                 Slash,
                 Symbol,
@@ -292,8 +294,7 @@ impl<'de> Iterator for Lexer<'de> {
                 Identifier,
             }
 
-            let mut just = |kind: TokenKind| {
-                is_previous_whitespace = false;
+            let just = |kind: TokenKind| {
                 Some(Ok(Token {
                     kind,
                     offset: c_at,
@@ -416,10 +417,7 @@ impl<'de> Iterator for Lexer<'de> {
                 '/' => Started::Slash,
                 'a'..='z' | 'A'..='Z' => Started::Identifier,
                 n @ '0'..='9' => Started::Number(n.to_digit(10).unwrap()),
-                c if c.is_whitespace() => {
-                    is_previous_whitespace = true;
-                    continue;
-                }
+                c if c.is_whitespace() => continue,
                 c => {
                     return Some(Err(SingleTokenError {
                         src: self.whole.to_string(),
@@ -526,7 +524,7 @@ impl<'de> Iterator for Lexer<'de> {
                     // TODO:
                     // 1. a slash is also valid for a comment when it's at the beginning of one file
                     // 2. support multi-line comments
-                    if is_previous_whitespace {
+                    if prev_whitespace {
                         let line_end = self.rest.find('\n').unwrap_or(self.rest.len());
                         let comment_closed = self.rest.find('\\');
 
