@@ -200,6 +200,7 @@ pub enum TokenKind {
     QuoteColon,     // ':
     SlashColon,     // /: each right
     BackslashColon, // \: each left
+    BackslashBackslash, // \\ abort
     AssignThrough(AssignThrough),
 
     // Literals.
@@ -408,6 +409,14 @@ impl<'de> Iterator for Lexer<'de> {
                             origin: &c_onwards[..2],
                             offset: c_at,
                             kind: TokenKind::BackslashColon,
+                        }));
+                    } else if self.rest.starts_with('\\') {
+                        self.rest = &self.rest[1..];
+                        self.byte += 1;
+                        return Some(Ok(Token {
+                            origin: &c_onwards[..2],
+                            offset: c_at,
+                            kind: TokenKind::BackslashBackslash,
                         }));
                     }
                     return just(TokenKind::BackSlash);
