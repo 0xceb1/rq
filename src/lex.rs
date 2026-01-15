@@ -91,6 +91,56 @@ impl fmt::Display for Token<'_> {
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
+pub enum AssignThrough {
+    Dot,        // .:
+    At,         // @:
+    Dollar,     // $:
+    Bang,       // !:
+    Query,      // ?:
+    Plus,       // +:
+    Minus,      // -:
+    Star,       // *:
+    Percent,    // %:
+    Equal,      // =:
+    Tilde,      // ~:
+    Less,       // <:
+    Greater,    // >:
+    Pipe,       // |:
+    Ampersand,  // &:
+    Hash,       // #:
+    Underscore, // _:
+    Caret,      // ^:
+    Comma,      // ,:
+}
+
+impl AssignThrough {
+    pub fn from_char(c: char) -> Option<Self> {
+        match c {
+            '.' => Some(Self::Dot),
+            '@' => Some(Self::At),
+            '$' => Some(Self::Dollar),
+            '!' => Some(Self::Bang),
+            '?' => Some(Self::Query),
+            '+' => Some(Self::Plus),
+            '-' => Some(Self::Minus),
+            '*' => Some(Self::Star),
+            '%' => Some(Self::Percent),
+            '=' => Some(Self::Equal),
+            '~' => Some(Self::Tilde),
+            '<' => Some(Self::Less),
+            '>' => Some(Self::Greater),
+            '|' => Some(Self::Pipe),
+            '&' => Some(Self::Ampersand),
+            '#' => Some(Self::Hash),
+            '_' => Some(Self::Underscore),
+            '^' => Some(Self::Caret),
+            ',' => Some(Self::Comma),
+            _ => None,
+        }
+    }
+}
+
+#[derive(PartialEq, Debug, Copy, Clone)]
 pub enum Numerical {
     Boolean,
     Short,
@@ -124,6 +174,7 @@ pub enum TokenKind {
     Slash,
     BackSlash,
     Star,
+    Percent,    // %
     BackTick,   // `
     Hash,       // #
     At,         // @
@@ -149,6 +200,7 @@ pub enum TokenKind {
     QuoteColon,     // ':
     SlashColon,     // /: each right
     BackslashColon, // \: each left
+    AssignThrough(AssignThrough),
 
     // Literals.
     Identifier,
@@ -258,23 +310,43 @@ impl<'de> Iterator for Lexer<'de> {
                 '}' => return just(TokenKind::RightBrace),
                 '[' => return just(TokenKind::LeftBracket),
                 ']' => return just(TokenKind::RightBracket),
-                ',' => return just(TokenKind::Comma),
-                '.' => return just(TokenKind::Dot),
-                '-' => return just(TokenKind::Minus),
-                '_' => return just(TokenKind::Underscore),
-                '+' => return just(TokenKind::Plus),
                 ';' => return just(TokenKind::Semicolon),
-                '*' => return just(TokenKind::Star),
-                '#' => return just(TokenKind::Hash),
-                '@' => return just(TokenKind::At),
-                '~' => return just(TokenKind::Tilde),
-                '|' => return just(TokenKind::Pipe),
-                '&' => return just(TokenKind::Ampersand),
-                '^' => return just(TokenKind::Caret),
-                '?' => return just(TokenKind::Query),
-                '$' => return just(TokenKind::Dollar),
-                '!' => return just(TokenKind::Bang),
-                '=' => return just(TokenKind::Equal),
+                c @ ('.' | '@' | '$' | '!' | '?' | '+' | '-' | '*' | '%' | '=' | '~' | '<'
+                | '>' | '|' | '&' | '#' | '_' | '^' | ',') => {
+                    if self.rest.starts_with(':') {
+                        self.rest = &self.rest[1..];
+                        self.byte += 1;
+                        let assign_through = AssignThrough::from_char(c).unwrap();
+                        return Some(Ok(Token {
+                            origin: &c_onwards[..2],
+                            offset: c_at,
+                            kind: TokenKind::AssignThrough(assign_through),
+                        }));
+                    }
+                    let kind = match c {
+                        '.' => TokenKind::Dot,
+                        '@' => TokenKind::At,
+                        '$' => TokenKind::Dollar,
+                        '!' => TokenKind::Bang,
+                        '?' => TokenKind::Query,
+                        '+' => TokenKind::Plus,
+                        '-' => TokenKind::Minus,
+                        '*' => TokenKind::Star,
+                        '%' => TokenKind::Percent,
+                        '=' => TokenKind::Equal,
+                        '~' => TokenKind::Tilde,
+                        '<' => TokenKind::Less,
+                        '>' => TokenKind::Greater,
+                        '|' => TokenKind::Pipe,
+                        '&' => TokenKind::Ampersand,
+                        '#' => TokenKind::Hash,
+                        '_' => TokenKind::Underscore,
+                        '^' => TokenKind::Caret,
+                        ',' => TokenKind::Comma,
+                        _ => unreachable!(),
+                    };
+                    return just(kind);
+                }
                 '`' => Started::Symbol,
                 '"' => Started::String,
                 '/' => Started::Slash,
