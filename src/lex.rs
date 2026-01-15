@@ -290,8 +290,6 @@ impl<'de> Iterator for Lexer<'de> {
                 String,
                 Number(u32),
                 Identifier,
-                // IfEqualElse(TokenKind, TokenKind), // >=, <=
-                // IfColonElse(TokenKind, TokenKind),
             }
 
             let mut just = |kind: TokenKind| {
@@ -304,6 +302,7 @@ impl<'de> Iterator for Lexer<'de> {
             };
 
             let started = match c {
+                // Match the next char
                 '(' => return just(TokenKind::LeftParen),
                 ')' => return just(TokenKind::RightParen),
                 '{' => return just(TokenKind::LeftBrace),
@@ -313,6 +312,7 @@ impl<'de> Iterator for Lexer<'de> {
                 ';' => return just(TokenKind::Semicolon),
                 c @ ('.' | '@' | '$' | '!' | '?' | '+' | '-' | '*' | '%' | '=' | '~' | '<'
                 | '>' | '|' | '&' | '#' | '_' | '^' | ',') => {
+                    // These chars can be assign through operator tokens
                     if self.rest.starts_with(':') {
                         self.rest = &self.rest[1..];
                         self.byte += 1;
@@ -323,7 +323,35 @@ impl<'de> Iterator for Lexer<'de> {
                             kind: TokenKind::AssignThrough(assign_through),
                         }));
                     }
+                    // Handle two-chars tokens: <>, >=, <=
                     let kind = match c {
+                        '<' if self.rest.starts_with('>') => {
+                            self.rest = &self.rest[1..];
+                            self.byte += 1;
+                            return Some(Ok(Token {
+                                origin: &c_onwards[..2],
+                                offset: c_at,
+                                kind: TokenKind::NotEqual,
+                            }));
+                        }
+                        '<' if self.rest.starts_with('=') => {
+                            self.rest = &self.rest[1..];
+                            self.byte += 1;
+                            return Some(Ok(Token {
+                                origin: &c_onwards[..2],
+                                offset: c_at,
+                                kind: TokenKind::LessEqual,
+                            }));
+                        }
+                        '>' if self.rest.starts_with('=') => {
+                            self.rest = &self.rest[1..];
+                            self.byte += 1;
+                            return Some(Ok(Token {
+                                origin: &c_onwards[..2],
+                                offset: c_at,
+                                kind: TokenKind::GreaterEqual,
+                            }));
+                        }
                         '.' => TokenKind::Dot,
                         '@' => TokenKind::At,
                         '$' => TokenKind::Dollar,
@@ -346,6 +374,42 @@ impl<'de> Iterator for Lexer<'de> {
                         _ => unreachable!(),
                     };
                     return just(kind);
+                }
+                ':' => {
+                    if self.rest.starts_with(':') {
+                        self.rest = &self.rest[1..];
+                        self.byte += 1;
+                        return Some(Ok(Token {
+                            origin: &c_onwards[..2],
+                            offset: c_at,
+                            kind: TokenKind::ColonColon,
+                        }));
+                    }
+                    return just(TokenKind::Colon);
+                }
+                '\'' => {
+                    if self.rest.starts_with(':') {
+                        self.rest = &self.rest[1..];
+                        self.byte += 1;
+                        return Some(Ok(Token {
+                            origin: &c_onwards[..2],
+                            offset: c_at,
+                            kind: TokenKind::QuoteColon,
+                        }));
+                    }
+                    return just(TokenKind::Quote);
+                }
+                '\\' => {
+                    if self.rest.starts_with(':') {
+                        self.rest = &self.rest[1..];
+                        self.byte += 1;
+                        return Some(Ok(Token {
+                            origin: &c_onwards[..2],
+                            offset: c_at,
+                            kind: TokenKind::BackslashColon,
+                        }));
+                    }
+                    return just(TokenKind::BackSlash);
                 }
                 '`' => Started::Symbol,
                 '"' => Started::String,
@@ -462,7 +526,6 @@ impl<'de> Iterator for Lexer<'de> {
                     // TODO:
                     // 1. a slash is also valid for a comment when it's at the beginning of one file
                     // 2. support multi-line comments
-                    // 3. parse each right
                     if is_previous_whitespace {
                         let line_end = self.rest.find('\n').unwrap_or(self.rest.len());
                         let comment_closed = self.rest.find('\\');
@@ -475,6 +538,14 @@ impl<'de> Iterator for Lexer<'de> {
                         self.byte += offset;
                         self.rest = &self.rest[offset..];
                         continue;
+                    } else if self.rest.starts_with(':') {
+                        self.rest = &self.rest[1..];
+                        self.byte += 1;
+                        Some(Ok(Token {
+                            origin: &c_onwards[..2],
+                            offset: c_at,
+                            kind: TokenKind::SlashColon,
+                        }))
                     } else {
                         Some(Ok(Token {
                             origin: c_str,
@@ -569,7 +640,6 @@ impl<'de> Iterator for Lexer<'de> {
                         }))
                     }
                 }
-                _ => todo!(),
             };
         } // loop
     }
