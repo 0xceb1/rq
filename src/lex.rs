@@ -141,23 +141,6 @@ impl AssignThrough {
 }
 
 #[derive(PartialEq, Debug, Copy, Clone)]
-pub enum Numerical {
-    Boolean,
-    Short,
-    Int,
-    Long,
-    Real,
-    Float,
-    Date, // 2000.01.01 = 0
-    Month,
-    Minute,
-    Second,
-    // Time,      // hh:mm:ss.uuu
-    Timespan,  // hh:mm:ss.nnnnnnnnn
-    Timestamp, // YYYY.MM.DDDhh:mm:ss.nnnnnnnn
-}
-
-#[derive(PartialEq, Debug, Copy, Clone)]
 pub enum TokenKind {
     // Single-character tokens.
     LeftParen,
@@ -205,7 +188,6 @@ pub enum TokenKind {
 
     // Literals.
     Identifier,
-    // Guid(Uuid),
     Byte,
     Char,
     Symbol,
@@ -216,24 +198,6 @@ pub enum TokenKind {
     QString,
     ByteVec,
 
-    // // Keywords.
-    // And,
-    // Class,
-    // Else,
-    // False,
-    // Fun,
-    // For,
-    // If,
-    // Nil,
-    // Or,
-    // Print,
-    // Return,
-    // Super,
-    // This,
-    // True,
-    // Var,
-    // While,
-    // Lambda,
     Eof,
 }
 
