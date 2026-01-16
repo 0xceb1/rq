@@ -56,28 +56,16 @@ pub fn preprocess(input: &str) -> Result<Vec<PreToken<'_>>, Error> {
     while i < tokens.len() {
         let tok = tokens[i];
 
-        match tok.kind {
-            TokenKind::String => {
-                result.push(PreToken::String(tok));
-                i += 1;
-                continue;
-            }
-            TokenKind::ByteVec => {
-                result.push(PreToken::ByteVec(tok));
-                i += 1;
-                continue;
-            }
-            TokenKind::SymbolVec => {
-                result.push(PreToken::SymbolVec(tok));
-                i += 1;
-                continue;
-            }
-            _ if !is_numeric(tok.kind) => {
-                result.push(PreToken::Single(tok));
-                i += 1;
-                continue;
-            }
-            _ => {}
+        if let Some(pretoken) = match tok.kind {
+            TokenKind::String => Some(PreToken::String(tok)),
+            TokenKind::ByteVec => Some(PreToken::ByteVec(tok)),
+            TokenKind::SymbolVec => Some(PreToken::SymbolVec(tok)),
+            _ if !is_numeric(tok.kind) => Some(PreToken::Single(tok)),
+            _ => None,
+        } {
+            result.push(pretoken);
+            i += 1;
+            continue;
         }
 
         let mut group = vec![tok];
