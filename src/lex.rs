@@ -306,8 +306,9 @@ pub enum TokenKind {
     Untyped(Numerical),
 
     // Non-atomic types
-    QString,
+    String,
     ByteVec,
+    SymbolVec,
 
     Eof,
 }
@@ -514,7 +515,6 @@ impl<'de> Iterator for Lexer<'de> {
             };
             break match started {
                 Started::Symbol => {
-                    // TODO: empty space not allowed in symbol vector
                     // WARN: when backtick is followed by some built-in operators, the behavior is bizarre!
                     // This is not supported in our toy interpreter for now, and is unlikely to be supported in the future.
                     // Examples:
@@ -536,17 +536,24 @@ impl<'de> Iterator for Lexer<'de> {
                     // ```
                     let end = self
                         .rest
-                        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != ':')
+                        .find(|c: char| {
+                            !c.is_ascii_alphanumeric() && c != '_' && c != ':' && c != '`'
+                        })
                         .unwrap_or(self.rest.len());
 
+                    let tag = self.rest.find('`').unwrap_or(self.rest.len());
+
                     if self.rest.starts_with('_') {
-                        // a symbol literal can contains _ but can't start with
+                        // q) `_a / illegal
+                        // q) `a`_b / legal
                         let c = self.rest.chars().next().unwrap();
                         let err = SingleTokenError {
                             src: self.whole.to_string(),
                             token: c,
                             err_span: SourceSpan::from(self.byte..self.byte + c.len_utf8()),
-                            help: Some("a symbol starting with _ is ambiguous in q".to_string()),
+                            help: Some(
+                                "a symbol literal with leading underscore is illegal".to_string(),
+                            ),
                         };
                         self.byte += self.rest.len();
                         self.rest = &self.rest[self.rest.len()..];
@@ -558,10 +565,16 @@ impl<'de> Iterator for Lexer<'de> {
                     let literal = &c_onwards[..end + 1];
                     self.byte += end;
                     self.rest = &self.rest[end..];
+
+                    let token_kind = if tag < end {
+                        TokenKind::SymbolVec
+                    } else {
+                        TokenKind::Symbol
+                    };
                     Some(Ok(Token {
                         origin: literal,
                         offset: c_at,
-                        kind: TokenKind::Symbol,
+                        kind: token_kind,
                     }))
                 }
                 Started::String => {
@@ -584,7 +597,7 @@ impl<'de> Iterator for Lexer<'de> {
                         let token_kind = if end == 1 {
                             TokenKind::Char
                         } else {
-                            TokenKind::QString
+                            TokenKind::String
                         };
                         Some(Ok(Token {
                             origin: literal,
