@@ -24,21 +24,4 @@ pub enum Q {
     Minute(Minute),
     Second(Second),
 
-    // vector
-    Booleans(Vec<bool>),
-    Guids(Vec<uuid::Uuid>),
-    Bytes(Vec<u8>),
-    Shorts(Vec<i16>),
-    Ints(Vec<i32>),
-    Longs(Vec<i64>),
-    Reals(Vec<f32>),
-    Floats(Vec<f64>),
-    String(Vec<u8>),
-    Symbols(Vec<Symbol>),
-    Timestamps(Vec<Timestamp>),
-    Months(Vec<Month>),
-    Dates(Vec<Date>),
-    Timespans(Vec<Timespan>),
-    Minutes(Vec<Minute>),
-    Seconds(Vec<Second>),
 }
