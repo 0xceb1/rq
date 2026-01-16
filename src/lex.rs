@@ -188,45 +188,11 @@ impl StringTerminationError {
     }
 }
 
-// #[derive(Debug, Clone, Copy, PartialEq, Display)]
-// pub enum Literal<'de> {
-//     Bool(bool),
-//     Char(AsciiChar),
-//     Byte(u8),
-//     Symbol(Symbol),
-//     #[display("{}", Literal::unescape(_0))]
-//     QString(&'de str),
-//     Short(i16),
-//     Int(i32),
-//     Long(i64),
-//     Real(f32),
-//     Float(f64),
-//     Date(Date),
-//     Month(Month),
-//     Minute(Minute),
-//     Second(Second),
-//     Timespan(Timespan),
-//     Timestamp(Timestamp),
-//     #[display("nil")]
-//     Nil,
-// }
-
-// impl Literal<'_> {
-//     pub fn unescape<'de>(s: &'de str) -> Cow<'de, str> {
-//         // TODO: impl escaping
-//         s.strip_prefix('"')
-//             .and_then(|s| s.strip_suffix('"'))
-//             .map(Cow::Borrowed)
-//             .unwrap_or(Cow::Borrowed(s))
-//     }
-// }
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Token<'de> {
     pub origin: &'de str,
     pub offset: usize,
     pub kind: TokenKind,
-    // pub literal: Literal<'de>,
 }
 
 impl fmt::Display for Token<'_> {
@@ -672,6 +638,7 @@ impl<'de> Iterator for Lexer<'de> {
                     }
                 }
                 Started::Identifier => {
+                    // TODO: dot is also allowed, which directly creat a dictionary
                     let first_non_ident = c_onwards
                         .find(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '_'))
                         .unwrap_or(c_onwards.len());
@@ -709,7 +676,7 @@ impl<'de> Iterator for Lexer<'de> {
                             offset: c_at,
                             kind: token_kind,
                         }));
-                    // TODO: a leading D is a valid timespan literal!
+                    // TODO: a leading D is a valid timespan literal! (but very bizarre)
                     } else {
                         let first_non_digit = c_onwards
                             .find(|c| {

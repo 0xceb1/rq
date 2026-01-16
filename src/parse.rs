@@ -45,6 +45,7 @@ fn is_adjacent(prev: &Token, next: &Token) -> bool {
 }
 
 pub fn preprocess(input: &str) -> Result<Vec<PreToken<'_>>, Error> {
+    // TODO: make this lazy
     let tokens: Vec<Token> = Lexer::new(input).collect::<Result<_, _>>()?;
     let mut result: Vec<PreToken> = Vec::new();
     let mut i = 0;
