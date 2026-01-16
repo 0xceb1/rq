@@ -26,6 +26,9 @@ impl InvalidVectorLiteralError {
 #[derive(Debug, Clone)]
 pub enum PreToken<'de> {
     Single(Token<'de>),
+    String(Token<'de>),
+    ByteVec(Token<'de>),
+    SymbolVec(Token<'de>),
     Vector {
         tokens: Vec<Token<'de>>,
         elem_type: Numerical,
@@ -53,10 +56,28 @@ pub fn preprocess(input: &str) -> Result<Vec<PreToken<'_>>, Error> {
     while i < tokens.len() {
         let tok = tokens[i];
 
-        if !is_numeric(tok.kind) {
-            result.push(PreToken::Single(tok));
-            i += 1;
-            continue;
+        match tok.kind {
+            TokenKind::String => {
+                result.push(PreToken::String(tok));
+                i += 1;
+                continue;
+            }
+            TokenKind::ByteVec => {
+                result.push(PreToken::ByteVec(tok));
+                i += 1;
+                continue;
+            }
+            TokenKind::SymbolVec => {
+                result.push(PreToken::SymbolVec(tok));
+                i += 1;
+                continue;
+            }
+            _ if !is_numeric(tok.kind) => {
+                result.push(PreToken::Single(tok));
+                i += 1;
+                continue;
+            }
+            _ => {}
         }
 
         let mut group = vec![tok];
