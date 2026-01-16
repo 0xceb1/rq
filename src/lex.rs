@@ -2,7 +2,152 @@ use miette::{Diagnostic, Error, SourceSpan};
 use std::fmt;
 use thiserror::Error;
 
-const NUMERICAL_SUFFIXES: &[char] = &['b', 'h', 'i', 'j', 'e', 'f', 'p', 'n', 'm', 'd', 'u', 'v'];
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Numerical {
+    Boolean,
+    Short,
+    Int,
+    Long,
+    Real,
+    Float,
+    Char,
+    Date,
+    Month,
+    Minute,
+    Second,
+    Timespan,
+    Timestamp,
+}
+
+impl Numerical {
+    // Atomic literal patterns:
+    // short     : 42h
+    // int       : 42i
+    // long      : 42 42j
+    // real      : 4.2e
+    // float     : 4.2 4.2f
+    // timestamp : 2013.02.06D12:34:56.123456789 2013.02.06D12:34:56.123456789p
+    //             12:34:56.123456789p -> 2000.01.01D12:34:56.123456789
+    //             2013.02p            -> 2000.01.01D20:13:00.020000000(coerced to long)
+    //             2013.02.06p         -> 2013.02.06D00:00:00.000000000
+    //             12:34p              -> 2000.01.01D12:34:00.000000000
+    //             12:34:56p           -> 2000.01.01D12:34:56.000000000
+    // timespan  : 12:34:56.123456789 12:34:56.123456789n
+    //             2013.02.06D12:34:56.123456789n -> 4785D12:34:56.123456789
+    //             2013.02n                       -> 0D20:13:00.02000000 (coerced to long)
+    //             2013.02.06n                    -> 4785D00:00:00.000000000
+    //             12:34n                         -> 0D12:34:00.000000000
+    //             12:34:56n                      -> 0D12:34:56.00000000
+    // month     : 2013.02m
+    //             2013.02.06m -> 2013.06m (coerced to long)
+    // date      : 2013.02.06 2013.02.06d
+    // minute    : 12:34 12:34u
+    // second    : 12:34:56 12:34:56v 12:34v 12v
+    pub fn from_suffix(c: char) -> Option<Self> {
+        match c {
+            'b' => Some(Self::Boolean),
+            'h' => Some(Self::Short),
+            'i' => Some(Self::Int),
+            'j' => Some(Self::Long),
+            'e' => Some(Self::Real),
+            'f' => Some(Self::Float),
+            'd' => Some(Self::Date),
+            'm' => Some(Self::Month),
+            'u' => Some(Self::Minute),
+            'v' => Some(Self::Second),
+            'n' => Some(Self::Timespan),
+            'p' => Some(Self::Timestamp),
+            _ => None,
+        }
+    }
+
+    /// Parse untyped literals. Valid forms:
+    /// - long      : `42` (digits only)
+    /// - float     : `4.2` (digits.digits)
+    /// - date      : `2013.02.06` (YYYY.MM.DD)
+    /// - timestamp : `2013.02.06D12:34:56.123456789`
+    /// - timespan  : `12:34:56.123456789` or `0D12:34:56.123456789`
+    /// - minute    : `12:34` (HH:MM)
+    /// - second    : `12:34:56` (HH:MM:SS) `12:34.123` (parsed to 12:34:00.123)
+    ///
+    /// These patterns are rejected while valid in q:
+    /// - HH:MM.xxx
+    pub fn parse_untyped(
+        origin: &str,
+        offset: usize,
+        src: &str,
+    ) -> Result<Self, InvalidLiteralError> {
+        let has_d = origin.contains('D');
+        let colon_count = origin.matches(':').count();
+        let dot_count = origin.matches('.').count();
+
+        let result = if has_d {
+            let before_d = origin.split('D').next().unwrap_or("");
+            if before_d.contains('.') {
+                Some(Self::Timestamp)
+            } else {
+                Some(Self::Timespan)
+            }
+        } else if colon_count > 0 {
+            let after_last_colon = origin.rsplit(':').next().unwrap_or("");
+            let has_fractional = after_last_colon.contains('.');
+
+            match (colon_count, has_fractional) {
+                (1, false) => Some(Self::Minute),
+                (1, true) => {
+                    return Err(InvalidLiteralError {
+                        src: src.to_string(),
+                        literal: origin.to_string(),
+                        err_span: SourceSpan::from(offset..offset + origin.len()),
+                        help: Some("HH:MM.xxx is ambiguous; use explicit patterns like HH:MM:SS.xxx or HH:MM:SS".into()),
+                    });
+                }
+                (2, false) => Some(Self::Second),
+                (2, true) => Some(Self::Timespan),
+                _ => None,
+            }
+        } else if dot_count > 0 {
+            if dot_count == 2 {
+                Some(Self::Date)
+            } else if dot_count == 1 {
+                Some(Self::Float)
+            } else {
+                None
+            }
+        } else {
+            Some(Self::Long)
+        };
+
+        result.ok_or_else(|| InvalidLiteralError {
+            src: src.to_string(),
+            literal: origin.to_string(),
+            err_span: SourceSpan::from(offset..offset + origin.len()),
+            help: None,
+        })
+    }
+}
+
+#[derive(Diagnostic, Debug, Error)]
+#[error("Invalid literal '{literal}'")]
+pub struct InvalidLiteralError {
+    #[source_code]
+    src: String,
+
+    pub literal: String,
+
+    #[label = "cannot determine type"]
+    err_span: SourceSpan,
+
+    #[help]
+    help: Option<String>,
+}
+
+impl InvalidLiteralError {
+    pub fn line(&self) -> usize {
+        let until_unrecongized = &self.src[..=self.err_span.offset()];
+        until_unrecongized.lines().count()
+    }
+}
 
 #[derive(Diagnostic, Debug, Error)]
 #[error("Unexpected token '{token}'")]
@@ -177,12 +322,12 @@ pub enum TokenKind {
     GreaterEqual,
     Less,
     LessEqual,
-    Colon,          // :
-    ColonColon,     // ::
-    Quote,          // '
-    QuoteColon,     // ':
-    SlashColon,     // /: each right
-    BackslashColon, // \: each left
+    Colon,              // :
+    ColonColon,         // ::
+    Quote,              // '
+    QuoteColon,         // ':
+    SlashColon,         // /: each right
+    BackslashColon,     // \: each left
     BackslashBackslash, // \\ abort
     AssignThrough(AssignThrough),
 
@@ -191,8 +336,8 @@ pub enum TokenKind {
     Byte,
     Char,
     Symbol,
-    Typed,
-    Untyped,
+    Typed(Numerical),
+    Untyped(Numerical),
 
     // Non-atomic types
     QString,
@@ -248,8 +393,8 @@ impl<'de> Iterator for Lexer<'de> {
             self.rest = chars.as_str();
             self.byte += c.len_utf8();
 
-            let prev_whitespace = c_at == 0
-                || self.whole.as_bytes()[c_at - 1].is_ascii_whitespace();
+            let prev_whitespace =
+                c_at == 0 || self.whole.as_bytes()[c_at - 1].is_ascii_whitespace();
 
             enum Started {
                 Slash,
@@ -403,6 +548,7 @@ impl<'de> Iterator for Lexer<'de> {
             };
             break match started {
                 Started::Symbol => {
+                    // TODO: empty space not allowed in symbol vector
                     // WARN: when backtick is followed by some built-in operators, the behavior is bizarre!
                     // This is not supported in our toy interpreter for now, and is unlikely to be supported in the future.
                     // Examples:
@@ -565,41 +711,27 @@ impl<'de> Iterator for Lexer<'de> {
                         }));
                     // TODO: a leading D is a valid timespan literal!
                     } else {
-                        // Numerical literal patterns:
-                        // short     : 42h
-                        // int       : 42i
-                        // long      : 42 42j
-                        // real      : 4.2e
-                        // float     : 4.2 4.2f
-                        // timestamp : 2013.02.06D12:34:56.123456789 2013.02.06D12:34:56.123456789p
-                        //             12:34:56.123456789p -> 2000.01.01D12:34:56.123456789
-                        //             2013.02p            -> 2000.01.01D20:13:00.020000000(coerced to long)
-                        //             2013.02.06p         -> 2013.02.06D00:00:00.000000000
-                        //             12:34p              -> 2000.01.01D12:34:00.000000000
-                        //             12:34:56p           -> 2000.01.01D12:34:56.000000000
-                        // timespan  : 12:34:56.123456789 12:34:56.123456789n
-                        //             2013.02.06D12:34:56.123456789n -> 4785D12:34:56.123456789
-                        //             2013.02n                       -> 0D20:13:00.02000000 (coerced to long)
-                        //             2013.02.06n                    -> 4785D00:00:00.000000000
-                        //             12:34n                         -> 0D12:34:00.000000000
-                        //             12:34:56n                      -> 0D12:34:56.00000000
-                        // month     : 2013.02m
-                        //             2013.02.06m -> 2013.06m (coerced to long)
-                        // date      : 2013.02.06 2013.02.06d
-                        // minute    : 12:34 12:34u
-                        // second    : 12:34:56 12:34:56v 12:34v 12v
-                        let mut first_non_digit = c_onwards
+                        let first_non_digit = c_onwards
                             .find(|c| {
                                 !matches!(c, '.' | ':' | 'D' | 'N' | 'W' | 'n' | 'w' | '0'..='9')
                             })
                             .unwrap_or(c_onwards.len());
                         let suffix = c_onwards[first_non_digit..].chars().next().unwrap_or('\0');
-                        let mut token_kind = TokenKind::Untyped;
-                        if NUMERICAL_SUFFIXES.contains(&suffix) {
-                            first_non_digit += 1;
-                            token_kind = TokenKind::Typed;
-                        }
-                        let literal = &c_onwards[..first_non_digit];
+
+                        let (literal, token_kind) =
+                            if let Some(atomic_type) = Numerical::from_suffix(suffix) {
+                                let literal = &c_onwards[..first_non_digit + 1];
+                                (literal, TokenKind::Typed(atomic_type))
+                            } else {
+                                let literal = &c_onwards[..first_non_digit];
+                                let atomic_type =
+                                    match Numerical::parse_untyped(literal, c_at, self.whole) {
+                                        Ok(t) => t,
+                                        Err(e) => return Some(Err(e.into())),
+                                    };
+                                (literal, TokenKind::Untyped(atomic_type))
+                            };
+
                         let extra_bytes = literal.len() - c.len_utf8();
                         self.byte += extra_bytes;
                         self.rest = &self.rest[extra_bytes..];

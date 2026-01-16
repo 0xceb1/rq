@@ -23,5 +23,4 @@ pub enum Q {
     Timespan(Timespan),
     Minute(Minute),
     Second(Second),
-
 }
