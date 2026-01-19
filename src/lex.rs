@@ -690,12 +690,34 @@ impl<'de> Iterator for Lexer<'de> {
                     // TODO: vector bool
                     // TODO: a leading D is a valid timespan literal! (but very bizarre)
                     } else {
-                        let (lpos, rpos, is_single_token) = find_num_end(c_onwards);
+                        let (lpos, rpos, mut is_single_token) = find_num_end(c_onwards);
                         let suffix = c_onwards[rpos..].chars().next().unwrap_or('\0');
 
                         let (literal, num_type) =
                             if let Some(num_type) = Atomic::from_suffix(suffix) {
                                 let literal = &c_onwards[..=rpos];
+
+                                if num_type == Atomic::Boolean {
+                                    let digits = &c_onwards[..rpos];
+                                    if let Some(invalid_pos) =
+                                        digits.find(|c: char| c != '0' && c != '1')
+                                    {
+                                        let invalid_offset = c_at + invalid_pos;
+                                        return Some(Err(InvalidLiteralError {
+                                            src: self.whole.to_string(),
+                                            literal: literal.to_string(),
+                                            err_span: SourceSpan::from(
+                                                invalid_offset..invalid_offset + 1,
+                                            ),
+                                            help: Some(
+                                                "boolean literal can only contain 0 and 1".into(),
+                                            ),
+                                        }
+                                        .into()));
+                                    }
+                                    is_single_token = digits.len() == 1;
+                                }
+
                                 (literal, num_type)
                             } else {
                                 let literal = &c_onwards[..rpos];
