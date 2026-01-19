@@ -302,13 +302,13 @@ pub enum TokenKind {
     Byte,
     Char,
     Symbol,
-    Typed(Numerical),
-    Untyped(Numerical),
+    Num(Numerical),
 
     // Non-atomic types
     String,
     ByteVec,
     SymbolVec,
+    NumVec(Numerical),
 
     Eof,
 }
@@ -690,31 +690,37 @@ impl<'de> Iterator for Lexer<'de> {
                             kind: token_kind,
                         }));
                     // TODO: a leading D is a valid timespan literal! (but very bizarre)
+                    // TODO: 1 2. 3 is a valid float vector literal
                     } else {
-                        let first_non_digit = c_onwards
-                            .find(|c| {
-                                !matches!(c, '.' | ':' | 'D' | 'N' | 'W' | 'n' | 'w' | '0'..='9')
-                            })
-                            .unwrap_or(c_onwards.len());
-                        let suffix = c_onwards[first_non_digit..].chars().next().unwrap_or('\0');
+                        let (lpos, rpos, is_single_token) = find_num_end(c_onwards);
+                        let suffix = c_onwards[rpos..].chars().next().unwrap_or('\0');
 
-                        let (literal, token_kind) =
-                            if let Some(atomic_type) = Numerical::from_suffix(suffix) {
-                                let literal = &c_onwards[..first_non_digit + 1];
-                                (literal, TokenKind::Typed(atomic_type))
+                        let (literal, num_type) =
+                            if let Some(num_type) = Numerical::from_suffix(suffix) {
+                                let literal = &c_onwards[..=rpos];
+                                (literal, num_type)
                             } else {
-                                let literal = &c_onwards[..first_non_digit];
-                                let atomic_type =
-                                    match Numerical::parse_untyped(literal, c_at, self.whole) {
-                                        Ok(t) => t,
-                                        Err(e) => return Some(Err(e.into())),
-                                    };
-                                (literal, TokenKind::Untyped(atomic_type))
+                                let literal = &c_onwards[..rpos];
+                                let num_type = match Numerical::parse_untyped(
+                                    &c_onwards[lpos..=rpos],
+                                    c_at,
+                                    self.whole,
+                                ) {
+                                    Ok(t) => t,
+                                    Err(e) => return Some(Err(e.into())),
+                                };
+                                (literal, num_type)
                             };
 
                         let extra_bytes = literal.len() - c.len_utf8();
                         self.byte += extra_bytes;
                         self.rest = &self.rest[extra_bytes..];
+
+                        let token_kind = if is_single_token {
+                            TokenKind::Num(num_type)
+                        } else {
+                            TokenKind::NumVec(num_type)
+                        };
 
                         Some(Ok(Token {
                             origin: literal,
@@ -726,4 +732,33 @@ impl<'de> Iterator for Lexer<'de> {
             };
         } // loop
     }
+}
+
+fn find_num_end(c_onwards: &str) -> (usize, usize, bool) {
+    let mut lpos = 0;
+    let mut rpos = 0;
+    let mut is_single_token = true;
+
+    while rpos < c_onwards.len() {
+        rpos += c_onwards[rpos..]
+            .find(|c| !matches!(c, '.' | ':' | 'D' | 'N' | 'W' | 'n' | 'w' | '0'..='9'))
+            .unwrap_or(c_onwards.len() - rpos);
+
+        let space_start = rpos;
+        // only accept ascii space char (U+0020)
+        while rpos < c_onwards.len() && c_onwards.as_bytes()[rpos] == b' ' {
+            rpos += 1;
+        }
+
+        if rpos < c_onwards.len() && c_onwards.as_bytes()[rpos].is_ascii_digit() {
+            lpos = rpos;
+            is_single_token = false;
+        } else {
+            rpos = space_start;
+            break;
+        }
+    }
+
+    // if suffixed, rpos would be the byte index of the suffix char
+    (lpos, rpos, is_single_token)
 }
