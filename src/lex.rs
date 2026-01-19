@@ -3,14 +3,16 @@ use std::fmt;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Numerical {
+pub enum Atomic {
     Boolean,
+    Byte,
     Short,
     Int,
     Long,
     Real,
     Float,
     Char,
+    Symbol,
     Date,
     Month,
     Minute,
@@ -19,7 +21,7 @@ pub enum Numerical {
     Timestamp,
 }
 
-impl Numerical {
+impl Atomic {
     // Atomic literal patterns:
     // short     : 42h
     // int       : 42i
@@ -299,16 +301,10 @@ pub enum TokenKind {
 
     // Literals.
     Identifier,
-    Byte,
-    Char,
-    Symbol,
-    Num(Numerical),
+    Single(Atomic),
 
     // Non-atomic types
-    String,
-    ByteVec,
-    SymbolVec,
-    NumVec(Numerical),
+    Vector(Atomic),
 
     Eof,
 }
@@ -567,9 +563,9 @@ impl<'de> Iterator for Lexer<'de> {
                     self.rest = &self.rest[end..];
 
                     let token_kind = if tag < end {
-                        TokenKind::SymbolVec
+                        TokenKind::Vector(Atomic::Symbol)
                     } else {
-                        TokenKind::Symbol
+                        TokenKind::Single(Atomic::Symbol)
                     };
                     Some(Ok(Token {
                         origin: literal,
@@ -595,9 +591,9 @@ impl<'de> Iterator for Lexer<'de> {
                         self.byte += end + 1;
                         self.rest = &self.rest[end + 1..];
                         let token_kind = if end == 1 {
-                            TokenKind::Char
+                            TokenKind::Single(Atomic::Char)
                         } else {
-                            TokenKind::String
+                            TokenKind::Vector(Atomic::Char)
                         };
                         Some(Ok(Token {
                             origin: literal,
@@ -680,28 +676,30 @@ impl<'de> Iterator for Lexer<'de> {
                         self.byte += extra_bytes;
                         self.rest = &self.rest[extra_bytes..];
                         let token_kind = if literal.len() <= 4 {
-                            TokenKind::Byte
+                            TokenKind::Single(Atomic::Byte)
                         } else {
-                            TokenKind::ByteVec
+                            TokenKind::Vector(Atomic::Byte)
                         };
                         return Some(Ok(Token {
                             origin: literal,
                             offset: c_at,
                             kind: token_kind,
                         }));
-                    // TODO: a leading D is a valid timespan literal! (but very bizarre)
+
                     // TODO: 1 2. 3 is a valid float vector literal
+                    // TODO: vector bool
+                    // TODO: a leading D is a valid timespan literal! (but very bizarre)
                     } else {
                         let (lpos, rpos, is_single_token) = find_num_end(c_onwards);
                         let suffix = c_onwards[rpos..].chars().next().unwrap_or('\0');
 
                         let (literal, num_type) =
-                            if let Some(num_type) = Numerical::from_suffix(suffix) {
+                            if let Some(num_type) = Atomic::from_suffix(suffix) {
                                 let literal = &c_onwards[..=rpos];
                                 (literal, num_type)
                             } else {
                                 let literal = &c_onwards[..rpos];
-                                let num_type = match Numerical::parse_untyped(
+                                let num_type = match Atomic::parse_untyped(
                                     &c_onwards[lpos..=rpos],
                                     c_at,
                                     self.whole,
@@ -717,9 +715,9 @@ impl<'de> Iterator for Lexer<'de> {
                         self.rest = &self.rest[extra_bytes..];
 
                         let token_kind = if is_single_token {
-                            TokenKind::Num(num_type)
+                            TokenKind::Single(num_type)
                         } else {
-                            TokenKind::NumVec(num_type)
+                            TokenKind::Vector(num_type)
                         };
 
                         Some(Ok(Token {
