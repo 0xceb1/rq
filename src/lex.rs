@@ -97,12 +97,13 @@ impl Atomic {
             match (colon_count, has_fractional) {
                 (1, false) => Some(Self::Minute),
                 (1, true) => {
-                    return Err(InvalidLiteralError {
-                        src: src.to_string(),
-                        literal: origin.to_string(),
-                        err_span: SourceSpan::from(offset..offset + origin.len()),
-                        help: Some("HH:MM.xxx is ambiguous; use explicit patterns like HH:MM:SS.xxx or HH:MM:SS".into()),
-                    });
+                    return Err(InvalidLiteralError::new(
+                        src,
+                        origin,
+                        "patterns like HH:MM.xxx are rejected",
+                        offset..offset + origin.len(),
+                        Some("Use non-ambiguous patterns like HH:MM:SS.xxx or HH:MM:SS"),
+                    ));
                 }
                 (2, false) => Some(Self::Second),
                 (2, true) => Some(Self::Timespan),
@@ -120,31 +121,52 @@ impl Atomic {
             Some(Self::Long)
         };
 
-        result.ok_or_else(|| InvalidLiteralError {
-            src: src.to_string(),
-            literal: origin.to_string(),
-            err_span: SourceSpan::from(offset..offset + origin.len()),
-            help: None,
+        result.ok_or_else(|| {
+            InvalidLiteralError::new(
+                src,
+                origin,
+                "cannot lex into token",
+                offset..offset + origin.len(),
+                None,
+            )
         })
     }
 }
 
 #[derive(Diagnostic, Debug, Error)]
-#[error("Invalid literal '{literal}'")]
+#[error("Invalid literal '{literal}' because {reason}")]
 pub struct InvalidLiteralError {
     #[source_code]
-    src: String,
+    pub src: String,
 
     pub literal: String,
 
-    #[label = "cannot determine type"]
-    err_span: SourceSpan,
+    pub reason: &'static str,
+
+    #[label = "here"]
+    pub err_span: SourceSpan,
 
     #[help]
-    help: Option<String>,
+    pub help: Option<&'static str>,
 }
 
 impl InvalidLiteralError {
+    pub fn new(
+        src: &str,
+        literal: &str,
+        reason: &'static str,
+        range: impl Into<SourceSpan>,
+        help: Option<&'static str>,
+    ) -> Self {
+        Self {
+            src: src.to_string(),
+            literal: literal.to_string(),
+            reason: reason,
+            err_span: range.into(),
+            help,
+        }
+    }
+
     pub fn line(&self) -> usize {
         let until_unrecongized = &self.src[..=self.err_span.offset()];
         until_unrecongized.lines().count()
@@ -687,7 +709,6 @@ impl<'de> Iterator for Lexer<'de> {
                         }));
 
                     // TODO: 1 2. 3 is a valid float vector literal
-                    // TODO: vector bool
                     // TODO: a leading D is a valid timespan literal! (but very bizarre)
                     } else {
                         let (lpos, rpos, mut is_single_token) = find_num_end(c_onwards);
@@ -703,16 +724,13 @@ impl<'de> Iterator for Lexer<'de> {
                                         digits.find(|c: char| c != '0' && c != '1')
                                     {
                                         let invalid_offset = c_at + invalid_pos;
-                                        return Some(Err(InvalidLiteralError {
-                                            src: self.whole.to_string(),
-                                            literal: literal.to_string(),
-                                            err_span: SourceSpan::from(
-                                                invalid_offset..invalid_offset + 1,
-                                            ),
-                                            help: Some(
-                                                "boolean literal can only contain 0 and 1".into(),
-                                            ),
-                                        }
+                                        return Some(Err(InvalidLiteralError::new(
+                                            self.whole,
+                                            literal,
+                                            "boolean literal can only contain 0 and 1",
+                                            invalid_offset..invalid_offset + 1,
+                                            None,
+                                        )
                                         .into()));
                                     }
                                     is_single_token = digits.len() == 1;
@@ -722,7 +740,7 @@ impl<'de> Iterator for Lexer<'de> {
                             } else {
                                 let literal = &c_onwards[..rpos];
                                 let num_type = match Atomic::parse_untyped(
-                                    &c_onwards[lpos..=rpos],
+                                    &c_onwards[lpos..rpos],
                                     c_at,
                                     self.whole,
                                 ) {
