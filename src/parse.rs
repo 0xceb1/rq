@@ -1,5 +1,6 @@
 use crate::lex::*;
 use crate::qtype::symbol::Symbol;
+use itertools::Itertools;
 use miette::Error;
 use std::fmt;
 
@@ -134,6 +135,54 @@ impl Noun {
                     .parse::<f64>()
                     .map_err(parse_err!("cannot parse into Float"))?,
             )),
+
+            // Vector types (space-separated numerical literals)
+            TokenKind::Vector(Atomic::Short) => {
+                let content = origin.strip_suffix('h').unwrap_or(origin);
+                let vec = content
+                    .split_whitespace()
+                    .map(|s| s.parse::<i16>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(parse_err!("cannot parse into vector Short"))?;
+                Ok(Noun::VecShort(vec))
+            }
+            TokenKind::Vector(Atomic::Int) => {
+                let content = origin.strip_suffix('i').unwrap_or(origin);
+                let vec = content
+                    .split_whitespace()
+                    .map(|s| s.parse::<i32>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(parse_err!("cannot parse into vector Int"))?;
+                Ok(Noun::VecInt(vec))
+            }
+            TokenKind::Vector(Atomic::Long) => {
+                let content = origin.strip_suffix('j').unwrap_or(origin);
+                let vec = content
+                    .split_whitespace()
+                    .map(|s| s.parse::<i64>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(parse_err!("cannot parse into vector Long"))?;
+                Ok(Noun::VecLong(vec))
+            }
+            TokenKind::Vector(Atomic::Real) => {
+                let content = origin.strip_suffix('e').unwrap_or(origin);
+                let vec = content
+                    .split_whitespace()
+                    .map(|s| s.parse::<f32>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(parse_err!("cannot parse into vector Real"))?;
+                Ok(Noun::VecReal(vec))
+            }
+            TokenKind::Vector(Atomic::Float) => {
+                let content = origin.strip_suffix('f').unwrap_or(origin);
+                let vec = content
+                    .split_whitespace()
+                    .map(|s| s.parse::<f64>())
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(parse_err!("cannot parse into vector Float"))?;
+                Ok(Noun::VecFloat(vec))
+            }
+
             _ => todo!(),
         }
     }
@@ -151,6 +200,13 @@ impl fmt::Display for Noun {
             Self::Float(x) => write!(f, "{x}"),
             Self::Char(x) => write!(f, "\"{x}\""),
             Self::Symbol(x) => write!(f, "{x}"),
+
+            Self::VecShort(v) => write!(f, "{}h", v.iter().format(" ")),
+            Self::VecInt(v) => write!(f, "{}i", v.iter().format(" ")),
+            Self::VecLong(v) => write!(f, "{}", v.iter().format(" ")),
+            Self::VecReal(v) => write!(f, "{}e", v.iter().format(" ")),
+            Self::VecFloat(v) => write!(f, "{}", v.iter().format(" ")),
+
             _ => todo!(),
         }
     }
@@ -195,7 +251,10 @@ impl<'de> Parser<'de> {
             .transpose()?
             .ok_or(miette::miette!("End of tokens"))?
         {
-            t @ Token { kind: TokenKind::Single(_), .. } => TokenTree::Noun(t),
+            t @ Token {
+                kind: TokenKind::Single(_) | TokenKind::Vector(_),
+                ..
+            } => TokenTree::Noun(t),
             t => Err(miette::miette!("bad token: {t}"))?,
         };
         loop {
