@@ -134,7 +134,7 @@ impl Atomic {
 }
 
 #[derive(Diagnostic, Debug, Error)]
-#[error("Invalid literal '{literal}' because {reason}")]
+#[error("Invalid literal '{literal}': {reason}")]
 pub struct InvalidLiteralError {
     #[source_code]
     pub src: String,

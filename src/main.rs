@@ -1,5 +1,5 @@
 use miette::{IntoDiagnostic, Result};
-use rq::Lexer;
+use rq::Parser;
 use std::io::{self, Write};
 
 fn main() -> Result<()> {
@@ -12,15 +12,10 @@ fn main() -> Result<()> {
             break;
         }
         if !buf.trim().is_empty() {
-            let lexer = Lexer::new(buf.as_str());
-            for c in lexer {
-                match c {
-                    Ok(token) => println!("{}", token),
-                    Err(e) => {
-                        eprintln!("{:?}", e);
-                        break;
-                    }
-                }
+            let mut parser = Parser::new(buf.as_str());
+            match parser.parse() {
+                Ok(expr) => println!("{}", expr),
+                Err(e) => eprintln!("{:?}", e),
             }
         }
     }
