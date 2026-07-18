@@ -36,6 +36,17 @@ impl fmt::Display for Op {
     }
 }
 
+impl Op {
+    /// Some ops force a result type regardless of operand rank, e.g. `%` (division)
+    /// always yields a float in q, even for two integer operands.
+    fn result_rank_override(&self) -> Option<NumRank> {
+        match self {
+            Op::Divide => Some(NumRank::Float),
+            _ => None,
+        }
+    }
+}
+
 /// kdb+/q *noun* data type, include:
 /// - atomic values
 /// - list of atomic values (vector)
@@ -287,55 +298,60 @@ fn is_op_token(t: Token<'_>) -> bool {
     matches!(t.kind, T::Plus | T::Minus | T::Star | T::Percent)
 }
 
-// ---- evaluation ----------------------------------------------------------
+// ---------------------------- evaluation -------------------------------
 //
-// Only numeric atom arithmetic is modelled. Vectors, non-numeric operands,
+// TODO: Only numeric atom arithmetic is modelled. Vectors, non-numeric operands,
 // null/infinity (`0N`/`0W`), and unary operators are not handled yet.
 
 /// Promotion rank: an operation on two numeric atoms produces the wider type.
-const RANK_SHORT: u8 = 0;
-const RANK_INT: u8 = 1;
-const RANK_LONG: u8 = 2;
-const RANK_REAL: u8 = 3;
-const RANK_FLOAT: u8 = 4;
-
-fn num_rank(n: &Noun) -> Option<u8> {
-    match n {
-        Noun::Short(_) => Some(RANK_SHORT),
-        Noun::Int(_) => Some(RANK_INT),
-        Noun::Long(_) => Some(RANK_LONG),
-        Noun::Real(_) => Some(RANK_REAL),
-        Noun::Float(_) => Some(RANK_FLOAT),
-        _ => None,
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum NumRank {
+    Short,
+    Int,
+    Long,
+    Real,
+    Float,
 }
 
-/// Widen an integer atom to i64. Lossless: only called on operands whose rank is
-/// <= the (integer) result rank, so the source is always Short/Int/Long.
-fn to_i64(n: &Noun) -> i64 {
-    match n {
-        Noun::Short(x) => *x as i64,
-        Noun::Int(x) => *x as i64,
-        Noun::Long(x) => *x,
-        _ => unreachable!("to_i64 on non-integer"),
+impl Noun {
+    fn rank(&self) -> Option<NumRank> {
+        match self {
+            Noun::Short(_) => Some(NumRank::Short),
+            Noun::Int(_) => Some(NumRank::Int),
+            Noun::Long(_) => Some(NumRank::Long),
+            Noun::Real(_) => Some(NumRank::Real),
+            Noun::Float(_) => Some(NumRank::Float),
+            _ => None,
+        }
     }
-}
 
-fn to_f64(n: &Noun) -> f64 {
-    match n {
-        Noun::Short(x) => *x as f64,
-        Noun::Int(x) => *x as f64,
-        Noun::Long(x) => *x as f64,
-        Noun::Real(x) => *x as f64,
-        Noun::Float(x) => *x,
-        _ => unreachable!("to_f64 on non-numeric"),
+    /// Widen an integer atom to i64. Lossless: only called on operands whose rank is
+    /// <= the (integer) result rank, so `self` is always Short/Int/Long here.
+    fn to_i64(&self) -> i64 {
+        match self {
+            Noun::Short(x) => *x as i64,
+            Noun::Int(x) => *x as i64,
+            Noun::Long(x) => *x,
+            _ => unreachable!("to_i64 on non-integer"),
+        }
+    }
+
+    fn to_f64(&self) -> f64 {
+        match self {
+            Noun::Short(x) => *x as f64,
+            Noun::Int(x) => *x as f64,
+            Noun::Long(x) => *x as f64,
+            Noun::Real(x) => *x as f64,
+            Noun::Float(x) => *x,
+            _ => unreachable!("to_f64 on non-numeric"),
+        }
     }
 }
 
 /// Add/Subtract/Multiply on operands already widened to i64.
 /// For a Short/Int result the i64 math cannot overflow (operands are i16/i32-ranged),
 /// and the caller truncates with `as`, which reproduces q's silent wraparound.
-fn narrow_int_op(op: Op, a: i64, b: i64) -> i64 {
+fn int_op(op: Op, a: i64, b: i64) -> i64 {
     match op {
         Op::Add => a + b,
         Op::Subtract => a - b,
@@ -362,26 +378,22 @@ fn float_op(op: Op, a: f64, b: f64) -> f64 {
     }
 }
 
-/// Apply a binary arithmetic op to two evaluated atoms.
 fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
-    let lr = num_rank(&lhs)
+    let lr = lhs
+        .rank()
         .ok_or_else(|| miette::miette!("type error: '{lhs}' is not a numeric atom"))?;
-    let rr = num_rank(&rhs)
+    let rr = rhs
+        .rank()
         .ok_or_else(|| miette::miette!("type error: '{rhs}' is not a numeric atom"))?;
 
-    // Division always yields a float
-    let rank = if matches!(op, Op::Divide) {
-        RANK_FLOAT
-    } else {
-        lr.max(rr)
-    };
+    let rank = op.result_rank_override().unwrap_or(lr.max(rr));
 
     let result = match rank {
-        RANK_SHORT => Noun::Short(narrow_int_op(op, to_i64(&lhs), to_i64(&rhs)) as i16),
-        RANK_INT => Noun::Int(narrow_int_op(op, to_i64(&lhs), to_i64(&rhs)) as i32),
-        RANK_LONG => Noun::Long(long_op(op, to_i64(&lhs), to_i64(&rhs))),
-        RANK_REAL => Noun::Real(float_op(op, to_f64(&lhs), to_f64(&rhs)) as f32),
-        _ => Noun::Float(float_op(op, to_f64(&lhs), to_f64(&rhs))),
+        NumRank::Short => Noun::Short(int_op(op, lhs.to_i64(), rhs.to_i64()) as i16),
+        NumRank::Int => Noun::Int(int_op(op, lhs.to_i64(), rhs.to_i64()) as i32),
+        NumRank::Long => Noun::Long(long_op(op, lhs.to_i64(), rhs.to_i64())),
+        NumRank::Real => Noun::Real(float_op(op, lhs.to_f64(), rhs.to_f64()) as f32),
+        NumRank::Float => Noun::Float(float_op(op, lhs.to_f64(), rhs.to_f64())),
     };
     Ok(result)
 }
