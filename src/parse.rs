@@ -270,6 +270,10 @@ impl<'de> Parser<'de> {
         loop {
             let op = match self.lexer.peek() {
                 Some(&Ok(t)) if is_op_token(t) => Op::from(t),
+                Some(&Ok(Token {
+                    kind: TokenKind::RightParen,
+                    ..
+                })) => break,
                 Some(_) => panic!("bad token"),
                 None => break,
             };
@@ -281,7 +285,8 @@ impl<'de> Parser<'de> {
         Ok(lhs)
     }
 
-    /// Parse a single operand: a literal noun, or a unary `-` applied to one.
+    /// Parse a single operand: a literal noun, a parenthesis group,
+    /// or a unary `-` applied to either.
     fn parse_operand(&mut self) -> Result<TokenTree<'de>, Error> {
         match self
             .lexer
@@ -293,6 +298,10 @@ impl<'de> Parser<'de> {
                 kind: TokenKind::Single(_) | TokenKind::Vector(_),
                 ..
             } => Ok(TokenTree::Noun(t)),
+            Token {
+                kind: TokenKind::LeftParen,
+                ..
+            } => self.parse_paren_body(),
             Token {
                 kind: TokenKind::Minus,
                 ..
@@ -306,11 +315,31 @@ impl<'de> Parser<'de> {
                     kind: TokenKind::Single(_) | TokenKind::Vector(_),
                     ..
                 } => Ok(TokenTree::Cons(Op::Subtract, vec![TokenTree::Noun(t)])),
+                Token {
+                    kind: TokenKind::LeftParen,
+                    ..
+                } => Ok(TokenTree::Cons(
+                    Op::Subtract,
+                    vec![self.parse_paren_body()?],
+                )),
                 t => Err(miette::miette!(
                     "unary '-' must apply to a literal, found: {t}"
                 ))?,
             },
             t => Err(miette::miette!("bad token: {t}"))?,
+        }
+    }
+
+    /// Parse the inside of a parenthesis group
+    fn parse_paren_body(&mut self) -> Result<TokenTree<'de>, Error> {
+        let inner = self.parse()?;
+        match self.lexer.next().transpose()? {
+            Some(Token {
+                kind: TokenKind::RightParen,
+                ..
+            }) => Ok(inner),
+            Some(t) => Err(miette::miette!("expected ')', found: {t}"))?,
+            None => Err(miette::miette!("unterminated '('"))?,
         }
     }
 }
@@ -502,6 +531,22 @@ mod tests {
     fn unary_minus_binds_tighter_than_binary_ops() {
         assert_eq!(run("2+-3"), "-1"); // (+ 2 (- 3)), not -(2+3)
         assert_eq!(run("2--3"), "5"); // (- 2 (- 3)) == 2 - (-3)
+    }
+
+    #[test]
+    fn parens_override_evaluation_order() {
+        assert_eq!(run("(2+3)*4"), "20");
+        assert_eq!(run("2*(3+4)"), "14");
+    }
+
+    #[test]
+    fn unary_minus_applies_to_parenthesized_expr() {
+        assert_eq!(run("-(2+3)"), "-5");
+    }
+
+    #[test]
+    fn unterminated_paren_is_an_error() {
+        assert!(Parser::new("(2+3").parse().is_err());
     }
 
     #[test]
