@@ -288,45 +288,27 @@ impl<'de> Parser<'de> {
     /// Parse a single operand: a literal noun, a parenthesis group,
     /// or a unary `-` applied to either.
     fn parse_operand(&mut self) -> Result<TokenTree<'de>, Error> {
-        match self
-            .lexer
-            .next()
-            .transpose()?
-            .ok_or(miette::miette!("End of tokens"))?
-        {
-            t @ Token {
-                kind: TokenKind::Single(_) | TokenKind::Vector(_),
-                ..
-            } => Ok(TokenTree::Noun(t)),
-            Token {
-                kind: TokenKind::LeftParen,
-                ..
-            } => self.parse_paren_body(),
-            Token {
-                kind: TokenKind::Minus,
-                ..
-            } => match self
-                .lexer
-                .next()
-                .transpose()?
-                .ok_or(miette::miette!("End of tokens"))?
-            {
-                t @ Token {
-                    kind: TokenKind::Single(_) | TokenKind::Vector(_),
-                    ..
-                } => Ok(TokenTree::Cons(Op::Subtract, vec![TokenTree::Noun(t)])),
-                Token {
-                    kind: TokenKind::LeftParen,
-                    ..
-                } => Ok(TokenTree::Cons(
-                    Op::Subtract,
-                    vec![self.parse_paren_body()?],
-                )),
-                t => Err(miette::miette!(
-                    "unary '-' must apply to a literal, found: {t}"
-                ))?,
-            },
-            t => Err(miette::miette!("bad token: {t}"))?,
+        let token = self.next_token()?;
+        if token.kind != TokenKind::Minus {
+            return self.noun_or_group(token);
+        }
+        let inner = self.next_token()?;
+        match inner.kind {
+            TokenKind::Single(_) | TokenKind::Vector(_) | TokenKind::LeftParen => Ok(
+                TokenTree::Cons(Op::Subtract, vec![self.noun_or_group(inner)?]),
+            ),
+            _ => Err(miette::miette!(
+                "unary '-' must apply to a literal, found: {inner}"
+            ))?,
+        }
+    }
+
+    /// A literal noun or a `(...)` group — the two forms an operand can take.
+    fn noun_or_group(&mut self, token: Token<'de>) -> Result<TokenTree<'de>, Error> {
+        match token.kind {
+            TokenKind::Single(_) | TokenKind::Vector(_) => Ok(TokenTree::Noun(token)),
+            TokenKind::LeftParen => self.parse_paren_body(),
+            _ => Err(miette::miette!("bad token: {token}"))?,
         }
     }
 
@@ -341,6 +323,13 @@ impl<'de> Parser<'de> {
             Some(t) => Err(miette::miette!("expected ')', found: {t}"))?,
             None => Err(miette::miette!("unterminated '('"))?,
         }
+    }
+
+    fn next_token(&mut self) -> Result<Token<'de>, Error> {
+        self.lexer
+            .next()
+            .transpose()?
+            .ok_or(miette::miette!("End of tokens"))
     }
 }
 
