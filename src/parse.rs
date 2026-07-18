@@ -111,16 +111,31 @@ impl Noun {
             };
         }
         match kind {
-            // TokenKind::Single(Atomic::Boolean) => {
-            //     Ok(Noun::Boolean(origin.parse::<bool>().map_err(|_| {
-            //         InvalidLiteralError::new(src, origin, offset..offset + origin.len(), None)
-            //     })?))
-            // }
-            // TokenKind::Single(Atomic::Byte) => {
-            //     Ok(Noun::Byte(origin.parse::<u8>().map_err(|_| {
-            //         InvalidLiteralError::new(src, origin, offset..offset + origin.len(), None)
-            //     })?))
-            // }
+            TokenKind::Single(Atomic::Boolean) => {
+                Ok(Noun::Boolean(origin.strip_suffix('b').unwrap_or(origin) == "1"))
+            }
+            TokenKind::Single(Atomic::Byte) => Ok(Noun::Byte(
+                u8::from_str_radix(origin.strip_prefix("0x").unwrap_or(origin), 16)
+                    .map_err(parse_err!("cannot parse into Byte"))?,
+            )),
+            TokenKind::Vector(Atomic::Boolean) => Ok(Noun::VecBoolean(
+                origin
+                    .strip_suffix('b')
+                    .unwrap_or(origin)
+                    .chars()
+                    .map(|c| c == '1')
+                    .collect(),
+            )),
+            TokenKind::Vector(Atomic::Byte) => {
+                let hex = origin.strip_prefix("0x").unwrap_or(origin);
+                let vec = hex
+                    .as_bytes()
+                    .chunks(2)
+                    .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(parse_err!("cannot parse into vector Byte"))?;
+                Ok(Noun::VecByte(vec))
+            }
             TokenKind::Single(Atomic::Short) => Ok(Noun::Short(
                 origin
                     .strip_suffix('h')
@@ -213,7 +228,7 @@ impl fmt::Display for Noun {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Boolean(x) => write!(f, "{}", if *x { "1b" } else { "0b" }),
-            Self::Byte(_) => todo!(),
+            Self::Byte(x) => write!(f, "0x{x:02x}"),
             Self::Short(x) => write!(f, "{x}h"),
             Self::Int(x) => write!(f, "{x}i"),
             Self::Long(x) => write!(f, "{x}"),
@@ -222,6 +237,10 @@ impl fmt::Display for Noun {
             Self::Char(x) => write!(f, "\"{x}\""),
             Self::Symbol(x) => write!(f, "{x}"),
 
+            Self::VecBoolean(v) => {
+                write!(f, "{}b", v.iter().map(|b| if *b { '1' } else { '0' }).format(""))
+            }
+            Self::VecByte(v) => write!(f, "0x{}", v.iter().format_with("", |b, f| f(&format_args!("{b:02x}")))),
             Self::VecShort(v) => write!(f, "{}h", v.iter().format(" ")),
             Self::VecInt(v) => write!(f, "{}i", v.iter().format(" ")),
             Self::VecLong(v) => write!(f, "{}", v.iter().format(" ")),
@@ -346,6 +365,8 @@ fn is_op_token(t: Token<'_>) -> bool {
 /// Promotion rank: an operation on two numeric atoms produces the wider type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum NumRank {
+    Boolean,
+    Byte,
     Short,
     Int,
     Long,
@@ -356,6 +377,8 @@ enum NumRank {
 impl Noun {
     fn rank(&self) -> Option<NumRank> {
         match self {
+            Noun::Boolean(_) => Some(NumRank::Boolean),
+            Noun::Byte(_) => Some(NumRank::Byte),
             Noun::Short(_) => Some(NumRank::Short),
             Noun::Int(_) => Some(NumRank::Int),
             Noun::Long(_) => Some(NumRank::Long),
@@ -368,6 +391,8 @@ impl Noun {
     /// Widen an integer atom to i64.
     fn to_i64(&self) -> i64 {
         match self {
+            Noun::Boolean(x) => *x as i64,
+            Noun::Byte(x) => *x as i64,
             Noun::Short(x) => *x as i64,
             Noun::Int(x) => *x as i64,
             Noun::Long(x) => *x,
@@ -377,6 +402,8 @@ impl Noun {
 
     fn to_f64(&self) -> f64 {
         match self {
+            Noun::Boolean(x) => *x as u8 as f64,
+            Noun::Byte(x) => *x as f64,
             Noun::Short(x) => *x as f64,
             Noun::Int(x) => *x as f64,
             Noun::Long(x) => *x as f64,
@@ -425,9 +452,17 @@ fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
         .rank()
         .ok_or_else(|| miette::miette!("type error: '{rhs}' is not a numeric atom"))?;
 
-    let rank = op.result_rank_override().unwrap_or(lr.max(rr));
+    // A pure-boolean op always promotes to Int
+    let widened = op.result_rank_override().unwrap_or(lr.max(rr));
+    let rank = if widened == NumRank::Boolean {
+        NumRank::Int
+    } else {
+        widened
+    };
 
     let result = match rank {
+        NumRank::Boolean => unreachable!("boolean rank is always promoted to int above"),
+        NumRank::Byte => Noun::Byte(int_op(op, lhs.to_i64(), rhs.to_i64()) as u8),
         NumRank::Short => Noun::Short(int_op(op, lhs.to_i64(), rhs.to_i64()) as i16),
         NumRank::Int => Noun::Int(int_op(op, lhs.to_i64(), rhs.to_i64()) as i32),
         NumRank::Long => Noun::Long(long_op(op, lhs.to_i64(), rhs.to_i64())),
@@ -443,6 +478,8 @@ fn negate(v: Noun) -> Result<Noun, Error> {
         .rank()
         .ok_or_else(|| miette::miette!("type error: '{v}' is not a numeric atom"))?
     {
+        NumRank::Boolean => Noun::Boolean(false),
+        NumRank::Byte => Noun::Byte(0),
         NumRank::Short => Noun::Short(0),
         NumRank::Int => Noun::Int(0),
         NumRank::Long => Noun::Long(0),
@@ -536,6 +573,29 @@ mod tests {
     #[test]
     fn unterminated_paren_is_an_error() {
         assert!(Parser::new("(2+3").parse().is_err());
+    }
+
+    #[test]
+    fn boolean_and_byte_literals() {
+        assert_eq!(run("1b"), "1b");
+        assert_eq!(run("0b"), "0b");
+        assert_eq!(run("101b"), "101b");
+        assert_eq!(run("0x2a"), "0x2a");
+        assert_eq!(run("0x01020a"), "0x01020a");
+    }
+
+    #[test]
+    fn boolean_arithmetic_promotes_to_int() {
+        // a 1-bit type can't hold 2, so q always promotes pure-boolean results to int
+        assert_eq!(run("1b+1b"), "2i");
+        // mixing with a wider type just widens normally
+        assert_eq!(run("1b+2i"), "3i");
+    }
+
+    #[test]
+    fn byte_arithmetic_wraps() {
+        assert_eq!(run("0x01+0x01"), "0x02");
+        assert_eq!(run("0xff+0x01"), "0x00"); // wraps mod 256, like Short/Long overflow
     }
 
     #[test]
