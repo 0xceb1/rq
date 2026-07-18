@@ -112,26 +112,36 @@ impl Noun {
             // }
             TokenKind::Single(Atomic::Short) => Ok(Noun::Short(
                 origin
+                    .strip_suffix('h')
+                    .unwrap_or(origin)
                     .parse::<i16>()
                     .map_err(parse_err!("cannot parse into Short"))?,
             )),
             TokenKind::Single(Atomic::Int) => Ok(Noun::Int(
                 origin
+                    .strip_suffix('i')
+                    .unwrap_or(origin)
                     .parse::<i32>()
                     .map_err(parse_err!("cannot parse into Int"))?,
             )),
             TokenKind::Single(Atomic::Long) => Ok(Noun::Long(
                 origin
+                    .strip_suffix('j')
+                    .unwrap_or(origin)
                     .parse::<i64>()
                     .map_err(parse_err!("cannot parse into Long"))?,
             )),
             TokenKind::Single(Atomic::Real) => Ok(Noun::Real(
                 origin
+                    .strip_suffix('e')
+                    .unwrap_or(origin)
                     .parse::<f32>()
                     .map_err(parse_err!("cannot parse into Real"))?,
             )),
             TokenKind::Single(Atomic::Float) => Ok(Noun::Float(
                 origin
+                    .strip_suffix('f')
+                    .unwrap_or(origin)
                     .parse::<f64>()
                     .map_err(parse_err!("cannot parse into Float"))?,
             )),
@@ -275,4 +285,156 @@ impl<'de> Parser<'de> {
 fn is_op_token(t: Token<'_>) -> bool {
     use TokenKind as T;
     matches!(t.kind, T::Plus | T::Minus | T::Star | T::Percent)
+}
+
+// ---- evaluation ----------------------------------------------------------
+//
+// Only numeric atom arithmetic is modelled. Vectors, non-numeric operands,
+// null/infinity (`0N`/`0W`), and unary operators are not handled yet.
+
+/// Promotion rank: an operation on two numeric atoms produces the wider type.
+const RANK_SHORT: u8 = 0;
+const RANK_INT: u8 = 1;
+const RANK_LONG: u8 = 2;
+const RANK_REAL: u8 = 3;
+const RANK_FLOAT: u8 = 4;
+
+fn num_rank(n: &Noun) -> Option<u8> {
+    match n {
+        Noun::Short(_) => Some(RANK_SHORT),
+        Noun::Int(_) => Some(RANK_INT),
+        Noun::Long(_) => Some(RANK_LONG),
+        Noun::Real(_) => Some(RANK_REAL),
+        Noun::Float(_) => Some(RANK_FLOAT),
+        _ => None,
+    }
+}
+
+/// Widen an integer atom to i64. Lossless: only called on operands whose rank is
+/// <= the (integer) result rank, so the source is always Short/Int/Long.
+fn to_i64(n: &Noun) -> i64 {
+    match n {
+        Noun::Short(x) => *x as i64,
+        Noun::Int(x) => *x as i64,
+        Noun::Long(x) => *x,
+        _ => unreachable!("to_i64 on non-integer"),
+    }
+}
+
+fn to_f64(n: &Noun) -> f64 {
+    match n {
+        Noun::Short(x) => *x as f64,
+        Noun::Int(x) => *x as f64,
+        Noun::Long(x) => *x as f64,
+        Noun::Real(x) => *x as f64,
+        Noun::Float(x) => *x,
+        _ => unreachable!("to_f64 on non-numeric"),
+    }
+}
+
+/// Add/Subtract/Multiply on operands already widened to i64.
+/// For a Short/Int result the i64 math cannot overflow (operands are i16/i32-ranged),
+/// and the caller truncates with `as`, which reproduces q's silent wraparound.
+fn narrow_int_op(op: Op, a: i64, b: i64) -> i64 {
+    match op {
+        Op::Add => a + b,
+        Op::Subtract => a - b,
+        Op::Multiply => a * b,
+        Op::Divide => unreachable!("`%` always promotes to float"),
+    }
+}
+
+fn long_op(op: Op, a: i64, b: i64) -> i64 {
+    match op {
+        Op::Add => a.wrapping_add(b),
+        Op::Subtract => a.wrapping_sub(b),
+        Op::Multiply => a.wrapping_mul(b),
+        Op::Divide => unreachable!("`%` always promotes to float"),
+    }
+}
+
+fn float_op(op: Op, a: f64, b: f64) -> f64 {
+    match op {
+        Op::Add => a + b,
+        Op::Subtract => a - b,
+        Op::Multiply => a * b,
+        Op::Divide => a / b,
+    }
+}
+
+/// Apply a binary arithmetic op to two evaluated atoms.
+fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
+    let lr = num_rank(&lhs)
+        .ok_or_else(|| miette::miette!("type error: '{lhs}' is not a numeric atom"))?;
+    let rr = num_rank(&rhs)
+        .ok_or_else(|| miette::miette!("type error: '{rhs}' is not a numeric atom"))?;
+
+    // Division always yields a float
+    let rank = if matches!(op, Op::Divide) {
+        RANK_FLOAT
+    } else {
+        lr.max(rr)
+    };
+
+    let result = match rank {
+        RANK_SHORT => Noun::Short(narrow_int_op(op, to_i64(&lhs), to_i64(&rhs)) as i16),
+        RANK_INT => Noun::Int(narrow_int_op(op, to_i64(&lhs), to_i64(&rhs)) as i32),
+        RANK_LONG => Noun::Long(long_op(op, to_i64(&lhs), to_i64(&rhs))),
+        RANK_REAL => Noun::Real(float_op(op, to_f64(&lhs), to_f64(&rhs)) as f32),
+        _ => Noun::Float(float_op(op, to_f64(&lhs), to_f64(&rhs))),
+    };
+    Ok(result)
+}
+
+/// Evaluate a parsed [`TokenTree`] into a [`Noun`].
+pub fn eval(tree: &TokenTree<'_>, src: &str) -> Result<Noun, Error> {
+    match tree {
+        TokenTree::Noun(token) => Noun::try_from_token(*token, src),
+        // ponytail: binary-only; the parser only ever builds 2-child Cons today.
+        // Revisit when unary operators arrive (match on args.len()).
+        TokenTree::Cons(op, args) => {
+            let lhs = eval(&args[0], src)?;
+            let rhs = eval(&args[1], src)?;
+            apply(*op, lhs, rhs)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(src: &str) -> String {
+        let tree = Parser::new(src).parse().unwrap();
+        format!("{}", eval(&tree, src).unwrap())
+    }
+
+    #[test]
+    fn basic_arithmetic() {
+        assert_eq!(run("2+3"), "5");
+        assert_eq!(run("10-4"), "6");
+        assert_eq!(run("6*7"), "42");
+    }
+
+    #[test]
+    fn divide_is_always_float() {
+        assert_eq!(run("7%2"), "3.5");
+        assert_eq!(run("10%2"), "5"); // 5.0 float, printed without a suffix by Noun's Display
+    }
+
+    #[test]
+    fn promotes_to_wider_type() {
+        // Long + Int -> Long: a "3i" result would print "3i", so plain "3" proves promotion.
+        assert_eq!(run("1i+2"), "3");
+        // Short + Long -> Long.
+        assert_eq!(run("2h+3"), "5");
+        // Long + Float -> Float.
+        assert_eq!(run("2+3.0"), "5");
+    }
+
+    #[test]
+    fn integer_overflow_wraps() {
+        assert_eq!(run("32767h+1h"), "-32768h"); // Short wraps via truncation
+        assert_eq!(run("9223372036854775807+1"), "-9223372036854775808"); // Long wraps
+    }
 }

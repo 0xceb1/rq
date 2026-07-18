@@ -1,5 +1,5 @@
 use miette::{IntoDiagnostic, Result};
-use rq::Parser;
+use rq::{Parser, parse::eval};
 use std::io::{self, Write};
 
 fn main() -> Result<()> {
@@ -13,8 +13,8 @@ fn main() -> Result<()> {
         }
         if !buf.trim().is_empty() {
             let mut parser = Parser::new(buf.as_str());
-            match parser.parse() {
-                Ok(expr) => println!("{}", expr),
+            match parser.parse().and_then(|expr| eval(&expr, buf.as_str())) {
+                Ok(value) => println!("{}", value),
                 Err(e) => eprintln!("{:?}", e),
             }
         }
