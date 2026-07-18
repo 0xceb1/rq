@@ -266,18 +266,7 @@ impl<'de> Parser<'de> {
     }
 
     pub fn parse(&mut self) -> Result<TokenTree<'de>, Error> {
-        let mut lhs = match self
-            .lexer
-            .next()
-            .transpose()?
-            .ok_or(miette::miette!("End of tokens"))?
-        {
-            t @ Token {
-                kind: TokenKind::Single(_) | TokenKind::Vector(_),
-                ..
-            } => TokenTree::Noun(t),
-            t => Err(miette::miette!("bad token: {t}"))?,
-        };
+        let mut lhs = self.parse_operand()?;
         loop {
             let op = match self.lexer.peek() {
                 Some(&Ok(t)) if is_op_token(t) => Op::from(t),
@@ -291,6 +280,39 @@ impl<'de> Parser<'de> {
         }
         Ok(lhs)
     }
+
+    /// Parse a single operand: a literal noun, or a unary `-` applied to one.
+    fn parse_operand(&mut self) -> Result<TokenTree<'de>, Error> {
+        match self
+            .lexer
+            .next()
+            .transpose()?
+            .ok_or(miette::miette!("End of tokens"))?
+        {
+            t @ Token {
+                kind: TokenKind::Single(_) | TokenKind::Vector(_),
+                ..
+            } => Ok(TokenTree::Noun(t)),
+            Token {
+                kind: TokenKind::Minus,
+                ..
+            } => match self
+                .lexer
+                .next()
+                .transpose()?
+                .ok_or(miette::miette!("End of tokens"))?
+            {
+                t @ Token {
+                    kind: TokenKind::Single(_) | TokenKind::Vector(_),
+                    ..
+                } => Ok(TokenTree::Cons(Op::Subtract, vec![TokenTree::Noun(t)])),
+                t => Err(miette::miette!(
+                    "unary '-' must apply to a literal, found: {t}"
+                ))?,
+            },
+            t => Err(miette::miette!("bad token: {t}"))?,
+        }
+    }
 }
 
 fn is_op_token(t: Token<'_>) -> bool {
@@ -301,7 +323,7 @@ fn is_op_token(t: Token<'_>) -> bool {
 // ---------------------------- evaluation -------------------------------
 //
 // TODO: Only numeric atom arithmetic is modelled. Vectors, non-numeric operands,
-// null/infinity (`0N`/`0W`), and unary operators are not handled yet.
+// null/infinity (`0N`/`0W`) are not handled yet.
 
 /// Promotion rank: an operation on two numeric atoms produces the wider type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -325,8 +347,7 @@ impl Noun {
         }
     }
 
-    /// Widen an integer atom to i64. Lossless: only called on operands whose rank is
-    /// <= the (integer) result rank, so `self` is always Short/Int/Long here.
+    /// Widen an integer atom to i64.
     fn to_i64(&self) -> i64 {
         match self {
             Noun::Short(x) => *x as i64,
@@ -398,17 +419,32 @@ fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
     Ok(result)
 }
 
+/// Unary minus
+fn negate(v: Noun) -> Result<Noun, Error> {
+    let zero = match v
+        .rank()
+        .ok_or_else(|| miette::miette!("type error: '{v}' is not a numeric atom"))?
+    {
+        NumRank::Short => Noun::Short(0),
+        NumRank::Int => Noun::Int(0),
+        NumRank::Long => Noun::Long(0),
+        NumRank::Real => Noun::Real(0.0),
+        NumRank::Float => Noun::Float(0.0),
+    };
+    apply(Op::Subtract, zero, v)
+}
+
 /// Evaluate a parsed [`TokenTree`] into a [`Noun`].
 pub fn eval(tree: &TokenTree<'_>, src: &str) -> Result<Noun, Error> {
     match tree {
         TokenTree::Noun(token) => Noun::try_from_token(*token, src),
-        // ponytail: binary-only; the parser only ever builds 2-child Cons today.
-        // Revisit when unary operators arrive (match on args.len()).
-        TokenTree::Cons(op, args) => {
-            let lhs = eval(&args[0], src)?;
-            let rhs = eval(&args[1], src)?;
-            apply(*op, lhs, rhs)
-        }
+        // `parse_operand` only ever builds a 1-child Cons for unary `-`,
+        // and `parse`'s loop only ever builds a 2-child Cons for binary ops.
+        TokenTree::Cons(op, args) => match args.as_slice() {
+            [operand] => negate(eval(operand, src)?),
+            [lhs, rhs] => apply(*op, eval(lhs, src)?, eval(rhs, src)?),
+            _ => unreachable!("Cons is always unary (`-x`) or binary"),
+        },
     }
 }
 
@@ -448,5 +484,33 @@ mod tests {
     fn integer_overflow_wraps() {
         assert_eq!(run("32767h+1h"), "-32768h"); // Short wraps via truncation
         assert_eq!(run("9223372036854775807+1"), "-9223372036854775808"); // Long wraps
+    }
+
+    #[test]
+    fn unary_minus() {
+        assert_eq!(run("-5"), "-5");
+        assert_eq!(run("-2h"), "-2h"); // stays Short, doesn't promote to Long
+    }
+
+    #[test]
+    fn unary_minus_does_not_stack() {
+        // matches q, which rejects `--2` ('- ) rather than treating it as double negation
+        assert!(Parser::new("--5").parse().is_err());
+    }
+
+    #[test]
+    fn unary_minus_binds_tighter_than_binary_ops() {
+        assert_eq!(run("2+-3"), "-1"); // (+ 2 (- 3)), not -(2+3)
+        assert_eq!(run("2--3"), "5"); // (- 2 (- 3)) == 2 - (-3)
+    }
+
+    #[test]
+    fn negate_wraps_at_short_min() {
+        // -32768h can't be typed directly (32768 overflows i16 before negation),
+        // so exercise the wraparound via negate() directly.
+        assert_eq!(
+            negate(Noun::Short(i16::MIN)).unwrap(),
+            Noun::Short(i16::MIN)
+        );
     }
 }
