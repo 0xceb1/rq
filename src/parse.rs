@@ -10,6 +10,8 @@ pub enum Op {
     Subtract, // -
     Multiply, // *
     Divide,   // %
+    And,      // &
+    Or,       // |
 }
 
 impl From<Token<'_>> for Op {
@@ -20,6 +22,8 @@ impl From<Token<'_>> for Op {
             T::Minus => Op::Subtract,
             T::Star => Op::Multiply,
             T::Percent => Op::Divide,
+            T::Ampersand => Op::And,
+            T::Pipe => Op::Or,
             _ => panic!("No a valid Op token"),
         }
     }
@@ -32,6 +36,8 @@ impl fmt::Display for Op {
             Op::Subtract => write!(f, "-"),
             Op::Multiply => write!(f, "*"),
             Op::Divide => write!(f, "%"),
+            Op::And => write!(f, "&"),
+            Op::Or => write!(f, "|"),
         }
     }
 }
@@ -354,7 +360,10 @@ impl<'de> Parser<'de> {
 
 fn is_op_token(t: Token<'_>) -> bool {
     use TokenKind as T;
-    matches!(t.kind, T::Plus | T::Minus | T::Star | T::Percent)
+    matches!(
+        t.kind,
+        T::Plus | T::Minus | T::Star | T::Percent | T::Ampersand | T::Pipe
+    )
 }
 
 // ---------------------------- evaluation -------------------------------
@@ -423,6 +432,8 @@ fn int_op(op: Op, a: i64, b: i64) -> i64 {
         Op::Subtract => a - b,
         Op::Multiply => a * b,
         Op::Divide => unreachable!("`%` always promotes to float"),
+        Op::And => a.min(b),
+        Op::Or => a.max(b),
     }
 }
 
@@ -432,6 +443,8 @@ fn long_op(op: Op, a: i64, b: i64) -> i64 {
         Op::Subtract => a.wrapping_sub(b),
         Op::Multiply => a.wrapping_mul(b),
         Op::Divide => unreachable!("`%` always promotes to float"),
+        Op::And => a.min(b),
+        Op::Or => a.max(b),
     }
 }
 
@@ -441,6 +454,8 @@ fn float_op(op: Op, a: f64, b: f64) -> f64 {
         Op::Subtract => a - b,
         Op::Multiply => a * b,
         Op::Divide => a / b,
+        Op::And => a.min(b),
+        Op::Or => a.max(b),
     }
 }
 
@@ -452,16 +467,15 @@ fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
         .rank()
         .ok_or_else(|| miette::miette!("type error: '{rhs}' is not a numeric atom"))?;
 
-    // A pure-boolean op always promotes to Int
     let widened = op.result_rank_override().unwrap_or(lr.max(rr));
-    let rank = if widened == NumRank::Boolean {
+    let rank = if widened == NumRank::Boolean && !matches!(op, Op::And | Op::Or) {
         NumRank::Int
     } else {
         widened
     };
 
     let result = match rank {
-        NumRank::Boolean => unreachable!("boolean rank is always promoted to int above"),
+        NumRank::Boolean => Noun::Boolean(int_op(op, lhs.to_i64(), rhs.to_i64()) != 0),
         NumRank::Byte => Noun::Byte(int_op(op, lhs.to_i64(), rhs.to_i64()) as u8),
         NumRank::Short => Noun::Short(int_op(op, lhs.to_i64(), rhs.to_i64()) as i16),
         NumRank::Int => Noun::Int(int_op(op, lhs.to_i64(), rhs.to_i64()) as i32),
@@ -596,6 +610,21 @@ mod tests {
     fn byte_arithmetic_wraps() {
         assert_eq!(run("0x01+0x01"), "0x02");
         assert_eq!(run("0xff+0x01"), "0x00"); // wraps mod 256, like Short/Long overflow
+    }
+
+    #[test]
+    fn and_or_are_min_max() {
+        assert_eq!(run("3&5"), "3");
+        assert_eq!(run("3|5"), "5");
+    }
+
+    #[test]
+    fn and_or_keep_boolean_type() {
+        // unlike +/-/*, min/max of two booleans can never leave {0,1}
+        assert_eq!(run("1b&0b"), "0b");
+        assert_eq!(run("1b|0b"), "1b");
+        // mixing with a wider type still widens normally
+        assert_eq!(run("1b&2i"), "1i");
     }
 
     #[test]
