@@ -177,7 +177,36 @@ enum NumRank {
     Float,
 }
 
+/// Operand shape: decides broadcasting and whether a result is an atom or a vector.
+/// An atom broadcasts; a 1-element vector does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    Atom,
+    Vector(usize),
+}
+
+/// Expand into an exhaustive `match` over every [`Noun`] variant, so adding a
+/// new variant forces a decision about its shape.
+macro_rules! shape_of {
+    ($noun:expr; atoms: $($atom:ident),+; vectors: $($vec:ident),+ $(,)?) => {
+        match $noun {
+            $(Noun::$atom(_))|+ => Shape::Atom,
+            $(Noun::$vec(v) => Shape::Vector(v.len()),)+
+        }
+    };
+}
+
 impl Noun {
+    fn shape(&self) -> Shape {
+        shape_of!(self;
+            atoms: Boolean, Guid, Byte, Short, Int, Long, Real, Float, Char, Symbol,
+                   Date, Month, Minute, Second, Timespan, Timestamp;
+            vectors: VecBoolean, VecGuid, VecByte, VecShort, VecInt, VecLong, VecReal,
+                     VecFloat, VecChar, VecSymbol, VecDate, VecMonth, VecMinute, VecSecond,
+                     VecTimespan, VecTimestamp,
+        )
+    }
+
     fn rank(&self) -> Option<NumRank> {
         match self {
             Noun::Boolean(_) => Some(NumRank::Boolean),
@@ -429,5 +458,43 @@ mod tests {
             negate(Noun::Short(i16::MIN)).unwrap(),
             Noun::Short(i16::MIN)
         );
+    }
+
+    #[test]
+    fn shape_distinguishes_atom_from_one_element_vector() {
+        assert_eq!(Noun::Long(1).shape(), Shape::Atom);
+        assert_eq!(Noun::VecLong(vec![1]).shape(), Shape::Vector(1));
+        assert_eq!(Noun::VecLong(vec![1, 2, 3]).shape(), Shape::Vector(3));
+        // q chars are bytes: "你好" is 6 bytes of UTF-8
+        assert_eq!(Noun::VecChar("你好".into()).shape(), Shape::Vector(6));
+    }
+
+    fn eval_src(src: &str) -> Noun {
+        eval(&Parser::new(src).parse().unwrap(), src).unwrap()
+    }
+
+    #[test]
+    fn strings_are_bytes() {
+        assert_eq!(eval_src(r#""你好""#), Noun::VecChar("你好".into()));
+        assert_eq!(run(r#""你好""#), r#""\344\275\240\345\245\275""#);
+    }
+
+    #[test]
+    fn escaped_single_char_is_an_atom() {
+        assert_eq!(eval_src(r#""\t""#), Noun::Char(b'\t'));
+        assert_eq!(eval_src(r#""\001""#), Noun::Char(1));
+        assert_eq!(eval_src(r#""a""#), Noun::Char(b'a'));
+    }
+
+    #[test]
+    fn string_display_escapes() {
+        assert_eq!(run(r#""a\"b\\c\n""#), r#""a\"b\\c\n""#);
+        assert_eq!(run(r#""\001""#), r#""\001""#);
+    }
+
+    #[test]
+    fn invalid_escape_is_an_error() {
+        let src = r#""\q""#;
+        assert!(eval(&Parser::new(src).parse().unwrap(), src).is_err());
     }
 }

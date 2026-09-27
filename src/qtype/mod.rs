@@ -24,7 +24,7 @@ pub enum Noun {
     Long(i64),
     Real(f32),
     Float(f64),
-    Char(char),
+    Char(u8),
     Symbol(Symbol),
     Date(Date),
     Month(Month),
@@ -41,7 +41,7 @@ pub enum Noun {
     VecLong(Vec<i64>),
     VecReal(Vec<f32>),
     VecFloat(Vec<f64>),
-    VecChar(String),
+    VecChar(Vec<u8>),
     VecSymbol(Vec<Symbol>),
     VecDate(Vec<Date>),
     VecMonth(Vec<Month>),
@@ -181,6 +181,16 @@ impl Noun {
                     .map_err(parse_err!("cannot parse into vector Float"))?;
                 Ok(Noun::VecFloat(vec))
             }
+            // Atom vs vector is only known after unescaping: "\t" is one char
+            TokenKind::Single(Atomic::Char) | TokenKind::Vector(Atomic::Char) => {
+                let bytes = unescape(&origin[1..origin.len() - 1])
+                    .ok_or(())
+                    .map_err(parse_err!("invalid escape in string"))?;
+                Ok(match bytes.as_slice() {
+                    [b] => Noun::Char(*b),
+                    _ => Noun::VecChar(bytes),
+                })
+            }
 
             _ => todo!(),
         }
@@ -197,7 +207,7 @@ impl fmt::Display for Noun {
             Self::Long(x) => write!(f, "{x}"),
             Self::Real(x) => write!(f, "{x}e"),
             Self::Float(x) => write!(f, "{x}"),
-            Self::Char(x) => write!(f, "\"{x}\""),
+            Self::Char(x) => write_q_string(f, &[*x]),
             Self::Symbol(x) => write!(f, "{x}"),
             Self::Date(x) => write!(f, "{x}"),
             Self::Month(x) => write!(f, "{x}"),
@@ -223,6 +233,7 @@ impl fmt::Display for Noun {
             Self::VecLong(v) => write!(f, "{}", v.iter().format(" ")),
             Self::VecReal(v) => write!(f, "{}e", v.iter().format(" ")),
             Self::VecFloat(v) => write!(f, "{}", v.iter().format(" ")),
+            Self::VecChar(v) => write_q_string(f, v),
             Self::VecDate(v) => write!(f, "{}", v.iter().format(" ")),
             Self::VecMonth(v) => write!(
                 f,
@@ -238,4 +249,44 @@ impl fmt::Display for Noun {
             _ => todo!(),
         }
     }
+}
+
+/// Decode a q string body into bytes: `\n \t \r \" \\` and 3-digit octal `\ooo`.
+fn unescape(s: &str) -> Option<Vec<u8>> {
+    let mut bytes = s.bytes();
+    let mut out = Vec::with_capacity(s.len());
+    while let Some(b) = bytes.next() {
+        if b != b'\\' {
+            out.push(b);
+            continue;
+        }
+        out.push(match bytes.next()? {
+            b'n' => b'\n',
+            b't' => b'\t',
+            b'r' => b'\r',
+            c @ (b'"' | b'\\') => c,
+            d @ b'0'..=b'7' => {
+                let digits = [d, bytes.next()?, bytes.next()?];
+                u8::from_str_radix(std::str::from_utf8(&digits).ok()?, 8).ok()?
+            }
+            _ => return None,
+        });
+    }
+    Some(out)
+}
+
+/// Display bytes the way q does: printable ASCII as-is, everything else escaped.
+fn write_q_string(f: &mut fmt::Formatter<'_>, bytes: &[u8]) -> fmt::Result {
+    write!(f, "\"")?;
+    for &b in bytes {
+        match b {
+            b'"' | b'\\' => write!(f, "\\{}", b as char)?,
+            b'\n' => write!(f, "\\n")?,
+            b'\t' => write!(f, "\\t")?,
+            b'\r' => write!(f, "\\r")?,
+            0x20..=0x7e => write!(f, "{}", b as char)?,
+            _ => write!(f, "\\{b:03o}")?,
+        }
+    }
+    write!(f, "\"")
 }

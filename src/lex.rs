@@ -612,15 +612,11 @@ impl<'de> Iterator for Lexer<'de> {
                         let literal = &c_onwards[..end + 1 + 1];
                         self.byte += end + 1;
                         self.rest = &self.rest[end + 1..];
-                        let token_kind = if end == 1 {
-                            TokenKind::Single(Atomic::Char)
-                        } else {
-                            TokenKind::Vector(Atomic::Char)
-                        };
+                        // Atom vs vector depends on escapes, so the parser decides
                         Some(Ok(Token {
                             origin: literal,
                             offset: c_at,
-                            kind: token_kind,
+                            kind: TokenKind::Vector(Atomic::Char),
                         }))
                     } else {
                         let err = StringTerminationError {
