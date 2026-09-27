@@ -199,6 +199,12 @@ impl fmt::Display for Noun {
             Self::Float(x) => write!(f, "{x}"),
             Self::Char(x) => write!(f, "\"{x}\""),
             Self::Symbol(x) => write!(f, "{x}"),
+            Self::Date(x) => write!(f, "{x}"),
+            Self::Month(x) => write!(f, "{x}"),
+            Self::Minute(x) => write!(f, "{x}"),
+            Self::Second(x) => write!(f, "{x}"),
+            Self::Timespan(x) => write!(f, "{x}"),
+            Self::Timestamp(x) => write!(f, "{x}"),
 
             Self::VecBoolean(v) => {
                 write!(
@@ -217,6 +223,17 @@ impl fmt::Display for Noun {
             Self::VecLong(v) => write!(f, "{}", v.iter().format(" ")),
             Self::VecReal(v) => write!(f, "{}e", v.iter().format(" ")),
             Self::VecFloat(v) => write!(f, "{}", v.iter().format(" ")),
+            Self::VecDate(v) => write!(f, "{}", v.iter().format(" ")),
+            Self::VecMonth(v) => write!(
+                f,
+                "{}m",
+                v.iter()
+                    .format_with(" ", |m, f| { f(&m.to_literal().trim_end_matches('m')) })
+            ),
+            Self::VecMinute(v) => write!(f, "{}", v.iter().format(" ")),
+            Self::VecSecond(v) => write!(f, "{}", v.iter().format(" ")),
+            Self::VecTimespan(v) => write!(f, "{}", v.iter().format(" ")),
+            Self::VecTimestamp(v) => write!(f, "{}", v.iter().format(" ")),
 
             _ => todo!(),
         }
