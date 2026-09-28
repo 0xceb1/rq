@@ -1,6 +1,6 @@
 use crate::lex::*;
 use crate::qtype::Noun;
-use miette::{Diagnostic, Error, SourceSpan};
+use miette::{Diagnostic, Error, LabeledSpan, SourceSpan};
 use std::fmt;
 use thiserror::Error;
 
@@ -113,6 +113,19 @@ impl<'de> Parser<'de> {
     }
 
     pub fn parse(&mut self) -> Result<TokenTree<'de>, Error> {
+        let tree = self.parse_expr()?;
+        match self.lexer.next().transpose()? {
+            None => Ok(tree),
+            Some(t) => Err(miette::miette!(
+                labels = vec![LabeledSpan::at(span_of(t), "here")],
+                "unexpected '{}'",
+                t.origin
+            )
+            .with_source_code(self.source.to_string())),
+        }
+    }
+
+    fn parse_expr(&mut self) -> Result<TokenTree<'de>, Error> {
         let mut lhs = self.parse_operand()?;
         loop {
             let (op, span) = match self.lexer.peek() {
@@ -126,7 +139,7 @@ impl<'de> Parser<'de> {
             };
 
             self.lexer.next();
-            let rhs = self.parse()?;
+            let rhs = self.parse_expr()?;
             lhs = TokenTree::Cons(op, span, vec![lhs, rhs]);
         }
         Ok(lhs)
@@ -165,7 +178,7 @@ impl<'de> Parser<'de> {
 
     /// Parse the inside of a parenthesis group
     fn parse_paren_body(&mut self) -> Result<TokenTree<'de>, Error> {
-        let inner = self.parse()?;
+        let inner = self.parse_expr()?;
         match self.lexer.next().transpose()? {
             Some(Token {
                 kind: TokenKind::RightParen,
@@ -531,6 +544,12 @@ mod tests {
     #[test]
     fn unary_minus_applies_to_parenthesized_expr() {
         assert_eq!(run("-(2+3)"), "-5");
+    }
+
+    #[test]
+    fn stray_close_paren_is_an_error() {
+        assert!(Parser::new("1 2 3)").parse().is_err());
+        assert!(Parser::new("(1+2))").parse().is_err());
     }
 
     #[test]
