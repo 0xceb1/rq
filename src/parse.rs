@@ -162,8 +162,8 @@ fn is_op_token(t: Token<'_>) -> bool {
 
 // ---------------------------- evaluation -------------------------------
 //
-// TODO: Only numeric atom arithmetic is modelled. Vectors, non-numeric operands,
-// null/infinity (`0N`/`0W`) are not handled yet.
+// TODO: Only numeric arithmetic (atoms and vectors) is modelled. Non-numeric
+// operands and null/infinity (`0N`/`0W`) are not handled yet.
 
 /// Promotion rank: an operation on two numeric atoms produces the wider type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -177,36 +177,29 @@ enum NumRank {
     Float,
 }
 
-/// Operand shape: decides broadcasting and whether a result is an atom or a vector.
+/// An operand widened for computation, tagged with its shape.
 /// An atom broadcasts; a 1-element vector does not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Shape {
-    Atom,
-    Vector(usize),
+#[derive(Debug, Clone, PartialEq)]
+enum Shape<T> {
+    Atom(T),
+    Vector(Vec<T>),
 }
 
-/// Expand into an exhaustive `match` over every [`Noun`] variant, so adding a
-/// new variant forces a decision about its shape.
-macro_rules! shape_of {
-    ($noun:expr; atoms: $($atom:ident),+; vectors: $($vec:ident),+ $(,)?) => {
+/// Match atom/vector variant pairs and widen them into `Shape<$to>` via `From`,
+/// with a fallback arm for everything else.
+macro_rules! widen {
+    ($noun:expr => $to:ty; $($atom:ident / $vec:ident),+; $other:ident => $fallback:expr) => {
         match $noun {
-            $(Noun::$atom(_))|+ => Shape::Atom,
-            $(Noun::$vec(v) => Shape::Vector(v.len()),)+
+            $(
+                Noun::$atom(x) => Shape::Atom(<$to>::from(x)),
+                Noun::$vec(v) => Shape::Vector(v.into_iter().map(<$to>::from).collect()),
+            )+
+            $other => $fallback,
         }
     };
 }
 
 impl Noun {
-    fn shape(&self) -> Shape {
-        shape_of!(self;
-            atoms: Boolean, Guid, Byte, Short, Int, Long, Real, Float, Char, Symbol,
-                   Date, Month, Minute, Second, Timespan, Timestamp;
-            vectors: VecBoolean, VecGuid, VecByte, VecShort, VecInt, VecLong, VecReal,
-                     VecFloat, VecChar, VecSymbol, VecDate, VecMonth, VecMinute, VecSecond,
-                     VecTimespan, VecTimestamp,
-        )
-    }
-
     fn rank(&self) -> Option<NumRank> {
         match self {
             Noun::Boolean(_) => Some(NumRank::Boolean),
@@ -216,51 +209,53 @@ impl Noun {
             Noun::Long(_) => Some(NumRank::Long),
             Noun::Real(_) => Some(NumRank::Real),
             Noun::Float(_) => Some(NumRank::Float),
+            Noun::VecBoolean(_) => Some(NumRank::Boolean),
+            Noun::VecByte(_) => Some(NumRank::Byte),
+            Noun::VecShort(_) => Some(NumRank::Short),
+            Noun::VecInt(_) => Some(NumRank::Int),
+            Noun::VecLong(_) => Some(NumRank::Long),
+            Noun::VecReal(_) => Some(NumRank::Real),
+            Noun::VecFloat(_) => Some(NumRank::Float),
             _ => None,
         }
     }
 
-    /// Widen an integer atom to i64.
-    fn to_i64(&self) -> i64 {
+    /// Widen an integer-family noun to `i64`.
+    fn into_i64(self) -> Shape<i64> {
+        widen!(self => i64;
+            Boolean / VecBoolean, Byte / VecByte, Short / VecShort, Int / VecInt, Long / VecLong;
+            other => unreachable!("into_i64 on non-integer '{other}'"))
+    }
+
+    /// Widen a numeric noun to `f64`.
+    fn into_f64(self) -> Shape<f64> {
+        widen!(self => f64;
+            Real / VecReal, Float / VecFloat;
+            int => int.into_i64().map(|x| x as f64))
+    }
+}
+
+impl<T> Shape<T> {
+    fn map<U>(self, f: impl Fn(T) -> U) -> Shape<U> {
         match self {
-            Noun::Boolean(x) => *x as i64,
-            Noun::Byte(x) => *x as i64,
-            Noun::Short(x) => *x as i64,
-            Noun::Int(x) => *x as i64,
-            Noun::Long(x) => *x,
-            _ => unreachable!("to_i64 on non-integer"),
+            Shape::Atom(x) => Shape::Atom(f(x)),
+            Shape::Vector(v) => Shape::Vector(v.into_iter().map(f).collect()),
         }
     }
 
-    fn to_f64(&self) -> f64 {
+    /// Wrap back into a [`Noun`], e.g. `s.into_noun(Noun::Short, Noun::VecShort)`.
+    fn into_noun(self, atom: fn(T) -> Noun, vector: fn(Vec<T>) -> Noun) -> Noun {
         match self {
-            Noun::Boolean(x) => *x as u8 as f64,
-            Noun::Byte(x) => *x as f64,
-            Noun::Short(x) => *x as f64,
-            Noun::Int(x) => *x as f64,
-            Noun::Long(x) => *x as f64,
-            Noun::Real(x) => *x as f64,
-            Noun::Float(x) => *x,
-            _ => unreachable!("to_f64 on non-numeric"),
+            Shape::Atom(x) => atom(x),
+            Shape::Vector(v) => vector(v),
         }
     }
 }
 
-/// Add/Subtract/Multiply on operands already widened to i64.
-/// For a Short/Int result the i64 math cannot overflow (operands are i16/i32-ranged),
-/// and the caller truncates with `as`, which reproduces q's silent wraparound.
+/// Integer ops on operands already widened to i64. Wrapping reproduces q's silent
+/// overflow for Long; for Short/Int the i64 math never overflows, and the later
+/// `as` truncation wraps instead.
 fn int_op(op: Op, a: i64, b: i64) -> i64 {
-    match op {
-        Op::Add => a + b,
-        Op::Subtract => a - b,
-        Op::Multiply => a * b,
-        Op::Divide => unreachable!("`%` always promotes to float"),
-        Op::And => a.min(b),
-        Op::Or => a.max(b),
-    }
-}
-
-fn long_op(op: Op, a: i64, b: i64) -> i64 {
     match op {
         Op::Add => a.wrapping_add(b),
         Op::Subtract => a.wrapping_sub(b),
@@ -282,13 +277,30 @@ fn float_op(op: Op, a: f64, b: f64) -> f64 {
     }
 }
 
+fn combine<T: Copy>(
+    lhs: Shape<T>,
+    rhs: Shape<T>,
+    f: impl Fn(T, T) -> T,
+) -> Result<Shape<T>, Error> {
+    use Shape::{Atom, Vector};
+    match (lhs, rhs) {
+        (Atom(x), Atom(y)) => Ok(Atom(f(x, y))),
+        (Atom(x), Vector(ys)) => Ok(Vector(ys.into_iter().map(|y| f(x, y)).collect())),
+        (Vector(xs), Atom(y)) => Ok(Vector(xs.into_iter().map(|x| f(x, y)).collect())),
+        (Vector(xs), Vector(ys)) if xs.len() == ys.len() => Ok(Vector(
+            xs.into_iter().zip(ys).map(|(x, y)| f(x, y)).collect(),
+        )),
+        (Vector(_), Vector(_)) => Err(miette::miette!("Dimension does not match")),
+    }
+}
+
 fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
     let lr = lhs
         .rank()
-        .ok_or_else(|| miette::miette!("type error: '{lhs}' is not a numeric atom"))?;
+        .ok_or_else(|| miette::miette!("type error: '{lhs}' is not numeric"))?;
     let rr = rhs
         .rank()
-        .ok_or_else(|| miette::miette!("type error: '{rhs}' is not a numeric atom"))?;
+        .ok_or_else(|| miette::miette!("type error: '{rhs}' is not numeric"))?;
 
     let widened = op.result_rank_override().unwrap_or(lr.max(rr));
     let rank = if widened == NumRank::Boolean && !matches!(op, Op::And | Op::Or) {
@@ -297,23 +309,33 @@ fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
         widened
     };
 
-    let result = match rank {
-        NumRank::Boolean => Noun::Boolean(int_op(op, lhs.to_i64(), rhs.to_i64()) != 0),
-        NumRank::Byte => Noun::Byte(int_op(op, lhs.to_i64(), rhs.to_i64()) as u8),
-        NumRank::Short => Noun::Short(int_op(op, lhs.to_i64(), rhs.to_i64()) as i16),
-        NumRank::Int => Noun::Int(int_op(op, lhs.to_i64(), rhs.to_i64()) as i32),
-        NumRank::Long => Noun::Long(long_op(op, lhs.to_i64(), rhs.to_i64())),
-        NumRank::Real => Noun::Real(float_op(op, lhs.to_f64(), rhs.to_f64()) as f32),
-        NumRank::Float => Noun::Float(float_op(op, lhs.to_f64(), rhs.to_f64())),
-    };
-    Ok(result)
+    use NumRank as R;
+    Ok(match rank {
+        R::Boolean | R::Byte | R::Short | R::Int | R::Long => {
+            let s = combine(lhs.into_i64(), rhs.into_i64(), |a, b| int_op(op, a, b))?;
+            match rank {
+                R::Boolean => s.map(|x| x != 0).into_noun(Noun::Boolean, Noun::VecBoolean),
+                R::Byte => s.map(|x| x as u8).into_noun(Noun::Byte, Noun::VecByte),
+                R::Short => s.map(|x| x as i16).into_noun(Noun::Short, Noun::VecShort),
+                R::Int => s.map(|x| x as i32).into_noun(Noun::Int, Noun::VecInt),
+                _ => s.into_noun(Noun::Long, Noun::VecLong),
+            }
+        }
+        R::Real | R::Float => {
+            let s = combine(lhs.into_f64(), rhs.into_f64(), |a, b| float_op(op, a, b))?;
+            match rank {
+                R::Real => s.map(|x| x as f32).into_noun(Noun::Real, Noun::VecReal),
+                _ => s.into_noun(Noun::Float, Noun::VecFloat),
+            }
+        }
+    })
 }
 
 /// Unary minus
 fn negate(v: Noun) -> Result<Noun, Error> {
     let zero = match v
         .rank()
-        .ok_or_else(|| miette::miette!("type error: '{v}' is not a numeric atom"))?
+        .ok_or_else(|| miette::miette!("type error: '{v}' is not numeric"))?
     {
         NumRank::Boolean => Noun::Boolean(false),
         NumRank::Byte => Noun::Byte(0),
@@ -461,12 +483,24 @@ mod tests {
     }
 
     #[test]
-    fn shape_distinguishes_atom_from_one_element_vector() {
-        assert_eq!(Noun::Long(1).shape(), Shape::Atom);
-        assert_eq!(Noun::VecLong(vec![1]).shape(), Shape::Vector(1));
-        assert_eq!(Noun::VecLong(vec![1, 2, 3]).shape(), Shape::Vector(3));
-        // q chars are bytes: "你好" is 6 bytes of UTF-8
-        assert_eq!(Noun::VecChar("你好".into()).shape(), Shape::Vector(6));
+    fn combine_broadcasts_atoms_only() {
+        use Shape::{Atom, Vector};
+        let add = |x: i64, y: i64| x + y;
+        assert_eq!(combine(Atom(1), Atom(2), add).unwrap(), Atom(3));
+        assert_eq!(
+            combine(Vector(vec![1, 2]), Atom(1), add).unwrap(),
+            Vector(vec![2, 3])
+        );
+        assert_eq!(
+            combine(Atom(1), Vector(vec![1, 2]), add).unwrap(),
+            Vector(vec![2, 3])
+        );
+        assert_eq!(
+            combine(Vector(vec![1, 2]), Vector(vec![3, 4]), add).unwrap(),
+            Vector(vec![4, 6])
+        );
+        // a 1-element vector is not an atom: no broadcasting
+        assert!(combine(Vector(vec![1]), Vector(vec![1, 2]), add).is_err());
     }
 
     fn eval_src(src: &str) -> Noun {
@@ -496,5 +530,40 @@ mod tests {
     fn invalid_escape_is_an_error() {
         let src = r#""\q""#;
         assert!(eval(&Parser::new(src).parse().unwrap(), src).is_err());
+    }
+
+    #[test]
+    fn vector_atom_broadcast() {
+        assert_eq!(run("1 2 3+1"), "2 3 4");
+        assert_eq!(run("1+1 2 3"), "2 3 4");
+    }
+
+    #[test]
+    fn vector_vector_elementwise() {
+        assert_eq!(run("1 2 3*4 5 6"), "4 10 18");
+    }
+
+    #[test]
+    fn vector_length_mismatch_is_an_error() {
+        let src = "1 2+1 2 3";
+        assert!(eval(&Parser::new(src).parse().unwrap(), src).is_err());
+    }
+
+    #[test]
+    fn vector_type_promotion() {
+        assert_eq!(run("1 2h+1"), "2 3"); // Short vec + Long -> Long vec
+        assert_eq!(run("1 2 3%2"), "0.5 1 1.5"); // always float
+        assert_eq!(run("101b+1b"), "2 1 2i"); // bool arithmetic -> int
+        assert_eq!(run("101b&110b"), "100b"); // & | keep bool
+    }
+
+    #[test]
+    fn vector_negate() {
+        assert_eq!(run("-1 2 3"), "-1 -2 -3");
+    }
+
+    #[test]
+    fn vector_in_nested_expr() {
+        assert_eq!(run("(1 2 3+1)*2"), "4 6 8");
     }
 }
