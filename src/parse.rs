@@ -11,6 +11,13 @@ pub enum Op {
     Divide,   // %
     And,      // &
     Or,       // |
+
+    Equal,        // =
+    NotEqual,     // <>
+    Less,         // <
+    LessEqual,    // <=
+    Greater,      // >
+    GreaterEqual, // >=
 }
 
 impl From<Token<'_>> for Op {
@@ -23,6 +30,12 @@ impl From<Token<'_>> for Op {
             T::Percent => Op::Divide,
             T::Ampersand => Op::And,
             T::Pipe => Op::Or,
+            T::Equal => Op::Equal,
+            T::NotEqual => Op::NotEqual,
+            T::Less => Op::Less,
+            T::LessEqual => Op::LessEqual,
+            T::Greater => Op::Greater,
+            T::GreaterEqual => Op::GreaterEqual,
             _ => panic!("No a valid Op token"),
         }
     }
@@ -37,6 +50,12 @@ impl fmt::Display for Op {
             Op::Divide => write!(f, "%"),
             Op::And => write!(f, "&"),
             Op::Or => write!(f, "|"),
+            Op::Equal => write!(f, "="),
+            Op::NotEqual => write!(f, "<>"),
+            Op::Less => write!(f, "<"),
+            Op::LessEqual => write!(f, "<="),
+            Op::Greater => write!(f, ">"),
+            Op::GreaterEqual => write!(f, ">="),
         }
     }
 }
@@ -49,6 +68,14 @@ impl Op {
             Op::Divide => Some(NumRank::Float),
             _ => None,
         }
+    }
+
+    fn is_comparison(&self) -> bool {
+        use Op as O;
+        matches!(
+            self,
+            O::Equal | O::NotEqual | O::Less | O::LessEqual | O::Greater | O::GreaterEqual
+        )
     }
 }
 
@@ -156,7 +183,18 @@ fn is_op_token(t: Token<'_>) -> bool {
     use TokenKind as T;
     matches!(
         t.kind,
-        T::Plus | T::Minus | T::Star | T::Percent | T::Ampersand | T::Pipe
+        T::Plus
+            | T::Minus
+            | T::Star
+            | T::Percent
+            | T::Ampersand
+            | T::Pipe
+            | T::Equal
+            | T::NotEqual
+            | T::Less
+            | T::LessEqual
+            | T::Greater
+            | T::GreaterEqual
     )
 }
 
@@ -263,6 +301,7 @@ fn int_op(op: Op, a: i64, b: i64) -> i64 {
         Op::Divide => unreachable!("`%` always promotes to float"),
         Op::And => a.min(b),
         Op::Or => a.max(b),
+        _ => unreachable!("comparisons are handled by `compare`"),
     }
 }
 
@@ -274,14 +313,30 @@ fn float_op(op: Op, a: f64, b: f64) -> f64 {
         Op::Divide => a / b,
         Op::And => a.min(b),
         Op::Or => a.max(b),
+        _ => unreachable!("comparisons are handled by `compare`"),
     }
 }
 
-fn combine<T: Copy>(
+/// Comparisons yield booleans. Operands are compared by value across types, so `1=1.0`.
+// TODO: q compares floats with a relative tolerance (`\P`); this is exact.
+fn compare<T: PartialOrd>(op: Op, a: T, b: T) -> bool {
+    match op {
+        Op::Equal => a == b,
+        Op::NotEqual => a != b,
+        Op::Less => a < b,
+        Op::LessEqual => a <= b,
+        Op::Greater => a > b,
+        Op::GreaterEqual => a >= b,
+        _ => unreachable!("not a comparison: {op}"),
+    }
+}
+
+/// Broadcasting
+fn combine<T: Copy, U>(
     lhs: Shape<T>,
     rhs: Shape<T>,
-    f: impl Fn(T, T) -> T,
-) -> Result<Shape<T>, Error> {
+    f: impl Fn(T, T) -> U,
+) -> Result<Shape<U>, Error> {
     use Shape::{Atom, Vector};
     match (lhs, rhs) {
         (Atom(x), Atom(y)) => Ok(Atom(f(x, y))),
@@ -302,6 +357,19 @@ fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
         .rank()
         .ok_or_else(|| miette::miette!("type error: '{rhs}' is not numeric"))?;
 
+    use NumRank as R;
+    if op.is_comparison() {
+        let s = match lr.max(rr) {
+            R::Real | R::Float => {
+                combine(lhs.into_f64(), rhs.into_f64(), |a, b| compare(op, a, b))?
+            }
+            R::Boolean | R::Byte | R::Short | R::Int | R::Long => {
+                combine(lhs.into_i64(), rhs.into_i64(), |a, b| compare(op, a, b))?
+            }
+        };
+        return Ok(s.into_noun(Noun::Boolean, Noun::VecBoolean));
+    }
+
     let widened = op.result_rank_override().unwrap_or(lr.max(rr));
     let rank = if widened == NumRank::Boolean && !matches!(op, Op::And | Op::Or) {
         NumRank::Int
@@ -309,7 +377,6 @@ fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
         widened
     };
 
-    use NumRank as R;
     Ok(match rank {
         R::Boolean | R::Byte | R::Short | R::Int | R::Long => {
             let s = combine(lhs.into_i64(), rhs.into_i64(), |a, b| int_op(op, a, b))?;
@@ -565,5 +632,37 @@ mod tests {
     #[test]
     fn vector_in_nested_expr() {
         assert_eq!(run("(1 2 3+1)*2"), "4 6 8");
+    }
+
+    #[test]
+    fn comparison_atoms() {
+        assert_eq!(run("1=1"), "1b");
+        assert_eq!(run("1<>2"), "1b");
+        assert_eq!(run("1<2"), "1b");
+        assert_eq!(run("2<1"), "0b");
+        assert_eq!(run("1<=1"), "1b");
+        assert_eq!(run("1>2"), "0b");
+        assert_eq!(run("2>=3"), "0b");
+    }
+
+    #[test]
+    fn comparison_across_types() {
+        assert_eq!(run("1=1.0"), "1b");
+        assert_eq!(run("1h<2.5"), "1b");
+        assert_eq!(run("1b=1"), "1b");
+    }
+
+    #[test]
+    fn comparison_vectors() {
+        assert_eq!(run("1 2 3=2"), "010b");
+        assert_eq!(run("1 2 3<2 2 2"), "100b");
+        let src = "1 2=1 2 3";
+        assert!(eval(&Parser::new(src).parse().unwrap(), src).is_err());
+    }
+
+    #[test]
+    fn comparison_composes_right_to_left() {
+        assert_eq!(run("1 2 3=1+0 1 2"), "111b"); // = (1+0 1 2)
+        assert_eq!(run("(1 2 3>1)+1"), "1 2 2"); // booleans promote in arithmetic
     }
 }
