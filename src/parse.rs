@@ -1,7 +1,8 @@
 use crate::lex::*;
 use crate::qtype::Noun;
-use miette::Error;
+use miette::{Diagnostic, Error, SourceSpan};
 use std::fmt;
+use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Op {
@@ -82,14 +83,14 @@ impl Op {
 #[derive(Debug, Clone)]
 pub enum TokenTree<'de> {
     Noun(Token<'de>),
-    Cons(Op, Vec<TokenTree<'de>>),
+    Cons(Op, SourceSpan, Vec<TokenTree<'de>>),
 }
 
 impl fmt::Display for TokenTree<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             TokenTree::Noun(token) => write!(f, "{}", token.origin),
-            TokenTree::Cons(op, exprs) => {
+            TokenTree::Cons(op, _, exprs) => {
                 write!(f, "({}", op)?;
                 for s in exprs {
                     write!(f, " {}", s)?
@@ -114,8 +115,8 @@ impl<'de> Parser<'de> {
     pub fn parse(&mut self) -> Result<TokenTree<'de>, Error> {
         let mut lhs = self.parse_operand()?;
         loop {
-            let op = match self.lexer.peek() {
-                Some(&Ok(t)) if is_op_token(t) => Op::from(t),
+            let (op, span) = match self.lexer.peek() {
+                Some(&Ok(t)) if is_op_token(t) => (Op::from(t), span_of(t)),
                 Some(&Ok(Token {
                     kind: TokenKind::RightParen,
                     ..
@@ -126,7 +127,7 @@ impl<'de> Parser<'de> {
 
             self.lexer.next();
             let rhs = self.parse()?;
-            lhs = TokenTree::Cons(op, vec![lhs, rhs]);
+            lhs = TokenTree::Cons(op, span, vec![lhs, rhs]);
         }
         Ok(lhs)
     }
@@ -140,9 +141,13 @@ impl<'de> Parser<'de> {
         }
         let inner = self.next_token()?;
         match inner.kind {
-            TokenKind::Single(_) | TokenKind::Vector(_) | TokenKind::LeftParen => Ok(
-                TokenTree::Cons(Op::Subtract, vec![self.noun_or_group(inner)?]),
-            ),
+            TokenKind::Single(_) | TokenKind::Vector(_) | TokenKind::LeftParen => {
+                Ok(TokenTree::Cons(
+                    Op::Subtract,
+                    span_of(token),
+                    vec![self.noun_or_group(inner)?],
+                ))
+            }
             _ => Err(miette::miette!(
                 "unary '-' must apply to a literal, found: {inner}"
             ))?,
@@ -179,6 +184,10 @@ impl<'de> Parser<'de> {
     }
 }
 
+fn span_of(t: Token<'_>) -> SourceSpan {
+    (t.offset, t.origin.len()).into()
+}
+
 fn is_op_token(t: Token<'_>) -> bool {
     use TokenKind as T;
     matches!(
@@ -202,6 +211,19 @@ fn is_op_token(t: Token<'_>) -> bool {
 //
 // TODO: Only numeric arithmetic (atoms and vectors) is modelled. Non-numeric
 // operands and null/infinity (`0N`/`0W`) are not handled yet.
+
+/// q's `'length`: two vectors of different lengths in an element-wise op.
+/// Raised without a location by [`combine`]; [`eval`] attaches the source and operator.
+#[derive(Diagnostic, Debug, Error)]
+#[error("'length")]
+pub struct LengthError {
+    #[source_code]
+    src: String,
+    #[label("lhs has {lhs} items, rhs has {rhs}")]
+    span: Option<SourceSpan>,
+    lhs: usize,
+    rhs: usize,
+}
 
 /// Promotion rank: an operation on two numeric atoms produces the wider type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -345,7 +367,12 @@ fn combine<T: Copy, U>(
         (Vector(xs), Vector(ys)) if xs.len() == ys.len() => Ok(Vector(
             xs.into_iter().zip(ys).map(|(x, y)| f(x, y)).collect(),
         )),
-        (Vector(_), Vector(_)) => Err(miette::miette!("Dimension does not match")),
+        (Vector(xs), Vector(ys)) => Err(LengthError {
+            src: String::new(),
+            span: None,
+            lhs: xs.len(),
+            rhs: ys.len(),
+        })?,
     }
 }
 
@@ -421,9 +448,19 @@ pub fn eval(tree: &TokenTree<'_>, src: &str) -> Result<Noun, Error> {
         TokenTree::Noun(token) => Noun::try_from_token(*token, src),
         // `parse_operand` only ever builds a 1-child Cons for unary `-`,
         // and `parse`'s loop only ever builds a 2-child Cons for binary ops.
-        TokenTree::Cons(op, args) => match args.as_slice() {
+        TokenTree::Cons(op, span, args) => match args.as_slice() {
             [operand] => negate(eval(operand, src)?),
-            [lhs, rhs] => apply(*op, eval(lhs, src)?, eval(rhs, src)?),
+            [lhs, rhs] => apply(*op, eval(lhs, src)?, eval(rhs, src)?).map_err(|e| match e
+                .downcast::<LengthError>(
+            ) {
+                Ok(e) => LengthError {
+                    src: src.into(),
+                    span: Some(*span),
+                    ..e
+                }
+                .into(),
+                Err(e) => e,
+            }),
             _ => unreachable!("Cons is always unary (`-x`) or binary"),
         },
     }
@@ -613,7 +650,20 @@ mod tests {
     #[test]
     fn vector_length_mismatch_is_an_error() {
         let src = "1 2+1 2 3";
-        assert!(eval(&Parser::new(src).parse().unwrap(), src).is_err());
+        let err = eval(&Parser::new(src).parse().unwrap(), src).unwrap_err();
+        let err = err.downcast::<LengthError>().unwrap();
+        assert_eq!((err.lhs, err.rhs), (2, 3));
+        assert_eq!(err.span, Some((3, 1).into())); // points at `+`
+    }
+
+    #[test]
+    fn nested_length_error_points_at_inner_op() {
+        let src = "(1 2+1 2 3)*2";
+        let err = eval(&Parser::new(src).parse().unwrap(), src).unwrap_err();
+        assert_eq!(
+            err.downcast::<LengthError>().unwrap().span,
+            Some((4, 1).into())
+        );
     }
 
     #[test]
