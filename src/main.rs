@@ -11,7 +11,11 @@ fn main() -> Result<()> {
         if bytes_read == 0 {
             break;
         }
-        if !buf.trim().is_empty() {
+        let input = buf.trim();
+        if input == r"\\" {
+            break;
+        }
+        if !input.is_empty() {
             let mut parser = Parser::new(buf.as_str());
             match parser.parse().and_then(|expr| eval(&expr, buf.as_str())) {
                 Ok(value) => println!("{}", value),
