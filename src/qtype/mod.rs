@@ -1,6 +1,7 @@
 pub mod chrono;
 pub mod symbol;
 
+use crate::error::QError;
 use crate::lex::{Atomic, InvalidLiteralError, Token, TokenKind};
 use crate::qtype::chrono::{Date, Minute, Month, Second, Timespan, Timestamp};
 use crate::qtype::symbol::Symbol;
@@ -192,7 +193,8 @@ impl Noun {
                 })
             }
 
-            _ => todo!(),
+            _ => Err(QError::nyi(format!("'{origin}' is not supported yet"))
+                .at(src, offset..offset + origin.len()))?,
         }
     }
 }

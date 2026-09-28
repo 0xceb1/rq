@@ -1,8 +1,8 @@
+use crate::error::QError;
 use crate::lex::*;
 use crate::qtype::Noun;
-use miette::{Diagnostic, Error, LabeledSpan, SourceSpan};
+use miette::{Error, LabeledSpan, SourceSpan};
 use std::fmt;
-use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Op {
@@ -19,27 +19,6 @@ pub enum Op {
     LessEqual,    // <=
     Greater,      // >
     GreaterEqual, // >=
-}
-
-impl From<Token<'_>> for Op {
-    fn from(value: Token<'_>) -> Self {
-        use TokenKind as T;
-        match value.kind {
-            T::Plus => Op::Add,
-            T::Minus => Op::Subtract,
-            T::Star => Op::Multiply,
-            T::Percent => Op::Divide,
-            T::Ampersand => Op::And,
-            T::Pipe => Op::Or,
-            T::Equal => Op::Equal,
-            T::NotEqual => Op::NotEqual,
-            T::Less => Op::Less,
-            T::LessEqual => Op::LessEqual,
-            T::Greater => Op::Greater,
-            T::GreaterEqual => Op::GreaterEqual,
-            _ => panic!("No a valid Op token"),
-        }
-    }
 }
 
 impl fmt::Display for Op {
@@ -62,6 +41,25 @@ impl fmt::Display for Op {
 }
 
 impl Op {
+    fn from_kind(kind: TokenKind) -> Option<Op> {
+        use TokenKind as T;
+        Some(match kind {
+            T::Plus => Op::Add,
+            T::Minus => Op::Subtract,
+            T::Star => Op::Multiply,
+            T::Percent => Op::Divide,
+            T::Ampersand => Op::And,
+            T::Pipe => Op::Or,
+            T::Equal => Op::Equal,
+            T::NotEqual => Op::NotEqual,
+            T::Less => Op::Less,
+            T::LessEqual => Op::LessEqual,
+            T::Greater => Op::Greater,
+            T::GreaterEqual => Op::GreaterEqual,
+            _ => return None,
+        })
+    }
+
     /// Some ops force a result type regardless of operand rank, e.g. `%` (division)
     /// always yields a float in q, even for two integer operands.
     fn result_rank_override(&self) -> Option<NumRank> {
@@ -116,31 +114,30 @@ impl<'de> Parser<'de> {
         let tree = self.parse_expr()?;
         match self.lexer.next().transpose()? {
             None => Ok(tree),
-            Some(t) => Err(miette::miette!(
-                labels = vec![LabeledSpan::at(span_of(t), "here")],
-                "unexpected '{}'",
-                t.origin
-            )
-            .with_source_code(self.source.to_string())),
+            Some(t) => Err(self.unexpected(t, "here")),
         }
     }
 
     fn parse_expr(&mut self) -> Result<TokenTree<'de>, Error> {
         let mut lhs = self.parse_operand()?;
         loop {
-            let (op, span) = match self.lexer.peek() {
-                Some(&Ok(t)) if is_op_token(t) => (Op::from(t), span_of(t)),
-                Some(&Ok(Token {
+            let t = match self.lexer.peek() {
+                None
+                | Some(Ok(Token {
                     kind: TokenKind::RightParen,
                     ..
                 })) => break,
-                Some(_) => panic!("bad token"),
-                None => break,
+                Some(Ok(t)) => *t,
+                Some(Err(_)) => return Err(self.next_token().unwrap_err()),
             };
+            let op = Op::from_kind(t.kind).ok_or_else(|| {
+                QError::nyi(format!("'{}' is not supported yet", t.origin))
+                    .at(self.source, span_of(t))
+            })?;
 
             self.lexer.next();
             let rhs = self.parse_expr()?;
-            lhs = TokenTree::Cons(op, span, vec![lhs, rhs]);
+            lhs = TokenTree::Cons(op, span_of(t), vec![lhs, rhs]);
         }
         Ok(lhs)
     }
@@ -161,9 +158,7 @@ impl<'de> Parser<'de> {
                     vec![self.noun_or_group(inner)?],
                 ))
             }
-            _ => Err(miette::miette!(
-                "unary '-' must apply to a literal, found: {inner}"
-            ))?,
+            _ => Err(self.unexpected(inner, "expected a literal or '(' after '-'")),
         }
     }
 
@@ -171,29 +166,42 @@ impl<'de> Parser<'de> {
     fn noun_or_group(&mut self, token: Token<'de>) -> Result<TokenTree<'de>, Error> {
         match token.kind {
             TokenKind::Single(_) | TokenKind::Vector(_) => Ok(TokenTree::Noun(token)),
-            TokenKind::LeftParen => self.parse_paren_body(),
-            _ => Err(miette::miette!("bad token: {token}"))?,
+            TokenKind::LeftParen => self.parse_paren_body(token),
+            _ => Err(self.unexpected(token, "expected a literal or '('")),
         }
     }
 
-    /// Parse the inside of a parenthesis group
-    fn parse_paren_body(&mut self) -> Result<TokenTree<'de>, Error> {
+    /// Parse the inside of a parenthesis group; `open` is the `(` token.
+    fn parse_paren_body(&mut self, open: Token<'de>) -> Result<TokenTree<'de>, Error> {
         let inner = self.parse_expr()?;
         match self.lexer.next().transpose()? {
             Some(Token {
                 kind: TokenKind::RightParen,
                 ..
             }) => Ok(inner),
-            Some(t) => Err(miette::miette!("expected ')', found: {t}"))?,
-            None => Err(miette::miette!("unterminated '('"))?,
+            // `parse_expr` only stops at `)` or end of input
+            _ => Err(self.syntax_error(span_of(open), "unterminated '('", "never closed")),
         }
     }
 
     fn next_token(&mut self) -> Result<Token<'de>, Error> {
-        self.lexer
-            .next()
-            .transpose()?
-            .ok_or(miette::miette!("End of tokens"))
+        let end = self.source.trim_end().len();
+        self.lexer.next().transpose()?.ok_or_else(|| {
+            self.syntax_error(
+                (end, 0).into(),
+                "unexpected end of input",
+                "expected an operand",
+            )
+        })
+    }
+
+    fn unexpected(&self, t: Token<'_>, label: &str) -> Error {
+        self.syntax_error(span_of(t), &format!("unexpected '{}'", t.origin), label)
+    }
+
+    fn syntax_error(&self, span: SourceSpan, msg: &str, label: &str) -> Error {
+        miette::miette!(labels = vec![LabeledSpan::at(span, label)], "{msg}")
+            .with_source_code(self.source.to_string())
     }
 }
 
@@ -201,42 +209,10 @@ fn span_of(t: Token<'_>) -> SourceSpan {
     (t.offset, t.origin.len()).into()
 }
 
-fn is_op_token(t: Token<'_>) -> bool {
-    use TokenKind as T;
-    matches!(
-        t.kind,
-        T::Plus
-            | T::Minus
-            | T::Star
-            | T::Percent
-            | T::Ampersand
-            | T::Pipe
-            | T::Equal
-            | T::NotEqual
-            | T::Less
-            | T::LessEqual
-            | T::Greater
-            | T::GreaterEqual
-    )
-}
-
 // ---------------------------- evaluation -------------------------------
 //
 // TODO: Only numeric arithmetic (atoms and vectors) is modelled. Non-numeric
 // operands and null/infinity (`0N`/`0W`) are not handled yet.
-
-/// q's `'length`: two vectors of different lengths in an element-wise op.
-/// Raised without a location by [`combine`]; [`eval`] attaches the source and operator.
-#[derive(Diagnostic, Debug, Error)]
-#[error("'length")]
-pub struct LengthError {
-    #[source_code]
-    src: String,
-    #[label("lhs has {lhs} items, rhs has {rhs}")]
-    span: Option<SourceSpan>,
-    lhs: usize,
-    rhs: usize,
-}
 
 /// Promotion rank: an operation on two numeric atoms produces the wider type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -371,7 +347,7 @@ fn combine<T: Copy, U>(
     lhs: Shape<T>,
     rhs: Shape<T>,
     f: impl Fn(T, T) -> U,
-) -> Result<Shape<U>, Error> {
+) -> Result<Shape<U>, QError> {
     use Shape::{Atom, Vector};
     match (lhs, rhs) {
         (Atom(x), Atom(y)) => Ok(Atom(f(x, y))),
@@ -380,22 +356,17 @@ fn combine<T: Copy, U>(
         (Vector(xs), Vector(ys)) if xs.len() == ys.len() => Ok(Vector(
             xs.into_iter().zip(ys).map(|(x, y)| f(x, y)).collect(),
         )),
-        (Vector(xs), Vector(ys)) => Err(LengthError {
-            src: String::new(),
-            span: None,
-            lhs: xs.len(),
-            rhs: ys.len(),
-        })?,
+        (Vector(xs), Vector(ys)) => Err(QError::length(xs.len(), ys.len())),
     }
 }
 
-fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
+fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, QError> {
     let lr = lhs
         .rank()
-        .ok_or_else(|| miette::miette!("type error: '{lhs}' is not numeric"))?;
+        .ok_or_else(|| QError::type_("lhs is not numeric"))?;
     let rr = rhs
         .rank()
-        .ok_or_else(|| miette::miette!("type error: '{rhs}' is not numeric"))?;
+        .ok_or_else(|| QError::type_("rhs is not numeric"))?;
 
     use NumRank as R;
     if op.is_comparison() {
@@ -439,11 +410,8 @@ fn apply(op: Op, lhs: Noun, rhs: Noun) -> Result<Noun, Error> {
 }
 
 /// Unary minus
-fn negate(v: Noun) -> Result<Noun, Error> {
-    let zero = match v
-        .rank()
-        .ok_or_else(|| miette::miette!("type error: '{v}' is not numeric"))?
-    {
+fn negate(v: Noun) -> Result<Noun, QError> {
+    let zero = match v.rank().ok_or_else(|| QError::type_("not numeric"))? {
         NumRank::Boolean => Noun::Boolean(false),
         NumRank::Byte => Noun::Byte(0),
         NumRank::Short => Noun::Short(0),
@@ -461,21 +429,15 @@ pub fn eval(tree: &TokenTree<'_>, src: &str) -> Result<Noun, Error> {
         TokenTree::Noun(token) => Noun::try_from_token(*token, src),
         // `parse_operand` only ever builds a 1-child Cons for unary `-`,
         // and `parse`'s loop only ever builds a 2-child Cons for binary ops.
-        TokenTree::Cons(op, span, args) => match args.as_slice() {
-            [operand] => negate(eval(operand, src)?),
-            [lhs, rhs] => apply(*op, eval(lhs, src)?, eval(rhs, src)?).map_err(|e| match e
-                .downcast::<LengthError>(
-            ) {
-                Ok(e) => LengthError {
-                    src: src.into(),
-                    span: Some(*span),
-                    ..e
-                }
-                .into(),
-                Err(e) => e,
-            }),
-            _ => unreachable!("Cons is always unary (`-x`) or binary"),
-        },
+        TokenTree::Cons(op, span, args) => {
+            let result = match args.as_slice() {
+                [operand] => negate(eval(operand, src)?),
+                [lhs, rhs] => apply(*op, eval(lhs, src)?, eval(rhs, src)?),
+                _ => unreachable!("Cons is always unary (`-x`) or binary"),
+            };
+            // nested errors already returned via `?` above, located at their own op
+            Ok(result.map_err(|e| e.at(src, *span))?)
+        }
     }
 }
 
@@ -670,8 +632,9 @@ mod tests {
     fn vector_length_mismatch_is_an_error() {
         let src = "1 2+1 2 3";
         let err = eval(&Parser::new(src).parse().unwrap(), src).unwrap_err();
-        let err = err.downcast::<LengthError>().unwrap();
-        assert_eq!((err.lhs, err.rhs), (2, 3));
+        let err = err.downcast::<QError>().unwrap();
+        assert_eq!(err.name, "length");
+        assert_eq!(err.label, "lhs has 2 items, rhs has 3");
         assert_eq!(err.span, Some((3, 1).into())); // points at `+`
     }
 
@@ -679,10 +642,7 @@ mod tests {
     fn nested_length_error_points_at_inner_op() {
         let src = "(1 2+1 2 3)*2";
         let err = eval(&Parser::new(src).parse().unwrap(), src).unwrap_err();
-        assert_eq!(
-            err.downcast::<LengthError>().unwrap().span,
-            Some((4, 1).into())
-        );
+        assert_eq!(err.downcast::<QError>().unwrap().span, Some((4, 1).into()));
     }
 
     #[test]
@@ -733,5 +693,32 @@ mod tests {
     fn comparison_composes_right_to_left() {
         assert_eq!(run("1 2 3=1+0 1 2"), "111b"); // = (1+0 1 2)
         assert_eq!(run("(1 2 3>1)+1"), "1 2 2"); // booleans promote in arithmetic
+    }
+
+    fn eval_err(src: &str) -> QError {
+        let err = Parser::new(src)
+            .parse()
+            .and_then(|t| eval(&t, src))
+            .unwrap_err();
+        err.downcast::<QError>().unwrap()
+    }
+
+    #[test]
+    fn type_error_points_at_op() {
+        let err = eval_err(r#""ab"+1"#);
+        assert_eq!((err.name, err.span), ("type", Some((4, 1).into())));
+    }
+
+    #[test]
+    fn unsupported_input_is_nyi_not_a_panic() {
+        assert_eq!(eval_err("1 x").name, "nyi"); // juxtaposition
+        assert_eq!(eval_err("1+2;3").name, "nyi");
+        assert_eq!(eval_err("`a").name, "nyi"); // symbol literal
+    }
+
+    #[test]
+    fn missing_operand_is_an_error() {
+        assert!(Parser::new("1+").parse().is_err());
+        assert!(Parser::new("-").parse().is_err());
     }
 }
