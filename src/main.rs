@@ -1,5 +1,5 @@
 use miette::{IntoDiagnostic, Result};
-use rq::{Parser, parse::eval};
+use rq::{Parser, eval};
 use std::io::{self, Write};
 
 fn main() -> Result<()> {
